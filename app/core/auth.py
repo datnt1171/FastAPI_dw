@@ -30,9 +30,14 @@ def decode_jwt_token(credentials: HTTPAuthorizationCredentials = Depends(securit
         )
 
 
-def has_permission(required_permission: str):
+def has_permission(required_permission: str = None):
     
     def check(payload: dict = Depends(decode_jwt_token)):
+        
+        # Authen only route
+        if required_permission is None:
+            return True
+        
         # Admin bypass
         if payload.get('role') == 'admin':
             logger.info(f"Admin user {payload.get('username')} bypassing permission check")
