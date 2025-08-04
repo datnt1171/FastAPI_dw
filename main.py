@@ -7,6 +7,7 @@ import logging
 from app.core.config import settings
 from app.core.auth import has_permission
 from app.core.database import db_manager
+from app.api.routes.crm import crm
 # from app.api.routes import warehouse, color_mixing
 
 # Configure logging
@@ -40,6 +41,7 @@ app.add_middleware(
 )
 
 # Include read-only routes
+app.include_router(crm.router, prefix="/api/crm", tags=["crm"])
 # app.include_router(warehouse.router, prefix="/api/warehouse", tags=["warehouse"])
 # app.include_router(color_mixing.router, prefix="/api/color-mixing", tags=["color-mixing"])
 
@@ -48,14 +50,14 @@ async def root():
     return {"message": "Data Warehouse Read-Only API", "version": "1.0.0"}
 
 @app.get("/health/")
-async def health_check():
+async def health_check(permitted = Depends(has_permission())):
     return {"status": "healthy", "service": "data-warehouse-readonly-api"}
     
-@app.get("/api/sales")
+@app.get("/api/sales/")
 async def get_sales_data(permitted = Depends(has_permission("read.dashboard.sales"))):
     return {"data": "sales data"}
 
-@app.get("/api/wh-overall") 
+@app.get("/api/wh-overall/") 
 async def get_wh_overall(permitted = Depends(has_permission("read.dashboard.wh_overall1"))):
     return {"data": "warehouse data"}    
 
