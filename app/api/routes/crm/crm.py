@@ -1,30 +1,59 @@
-from fastapi import APIRouter, Depends, HTTPException
-from typing import List, Dict, Any
+from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import List, Dict, Any, Union
 import logging
-
+import asyncio
 from app.core.auth import has_permission
 from app.core.database import execute_sql_file
+from app.core.pagination import Paginator
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-@router.get("/factories/", response_model=List[Dict[str, Any]])
-async def get_factories(permitted = Depends(has_permission())):
-    """
-    Get all distinct factories from the data warehouse
-    """
+@router.get("/factories/")
+async def get_factories(
+    request: Request,
+    is_active: bool = True,
+    has_onsite: bool = True,
+    offset: int = 0,
+    limit: int = 50,
+    permitted = Depends(has_permission())
+) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+
     try:
-        factories = await execute_sql_file(
+        # Execute queries concurrently
+        factories_task = execute_sql_file(
             "app/api/routes/crm/sql/get_factories.sql",
+            params={
+                "is_active": is_active,
+                "has_onsite": has_onsite,
+                "offset": offset,
+                "limit": limit
+            },
             fetch_all=True
         )
         
-        if not factories:
-            logger.info("No factories found in database")
-            return []
+        count_task = execute_sql_file(
+            "app/api/routes/crm/sql/count_factories.sql",
+            params={
+                "is_active": is_active,
+                "has_onsite": has_onsite,
+            },
+            fetch_one=True,
+            fetch_all=False
+        )
         
-        logger.info(f"Retrieved {len(factories)} factories")
-        return factories
+        # Await
+        factories, count_result = await asyncio.gather(factories_task, count_task)
+        
+        total_count = count_result.get('count', 0) if count_result else 0
+        logger.info(f"Total factories count: {total_count}")
+        
+        # Create paginator and return paginated response
+        paginator = Paginator(request, offset, limit)
+        paginated_response = paginator.paginate(factories or [], total_count)
+        
+        logger.info(f"Retrieved {len(factories or [])} factories out of {total_count}")
+        return paginated_response
         
     except Exception as e:
         logger.error(f"Error retrieving factories: {str(e)}")
