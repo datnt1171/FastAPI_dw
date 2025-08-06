@@ -1,15 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from typing import List, Dict, Any, Union
+from typing import Dict, Any
 import logging
 import asyncio
 from app.core.auth import has_permission
 from app.core.database import execute_sql_file
 from app.core.pagination import Paginator
+from app.schemas.factories import PaginatedFactoryList, Factory, FactoryDetail
+from app.schemas.schema_helpers import validate_sql_results
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-@router.get("/factories/")
+@router.get("/factories/", response_model=PaginatedFactoryList)
 async def get_factories(
     request: Request,
     is_active: bool = True,
@@ -17,7 +19,7 @@ async def get_factories(
     offset: int = 0,
     limit: int = 50,
     permitted = Depends(has_permission())
-) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+) -> PaginatedFactoryList:
 
     try:
         # Execute queries concurrently
@@ -43,17 +45,26 @@ async def get_factories(
         )
         
         # Await
-        factories, count_result = await asyncio.gather(factories_task, count_task)
+        factories_data, count_result = await asyncio.gather(factories_task, count_task)
         
+        # Validate data against schema
+        factories = validate_sql_results(factories_data or [], Factory)
         total_count = count_result.get('count', 0) if count_result else 0
         logger.info(f"Total factories count: {total_count}")
         
         # Create paginator and return paginated response
         paginator = Paginator(request, offset, limit)
-        paginated_response = paginator.paginate(factories or [], total_count)
+        paginated_response = paginator.paginate(
+            [item.model_dump() for item in factories], 
+            total_count
+        )
         
-        logger.info(f"Retrieved {len(factories or [])} factories out of {total_count}")
-        return paginated_response
+        return PaginatedFactoryList(
+            count=paginated_response['count'],
+            next=paginated_response.get('next'),
+            previous=paginated_response.get('previous'),
+            results=factories
+        )
         
     except Exception as e:
         logger.error(f"Error retrieving factories: {str(e)}")
@@ -62,11 +73,11 @@ async def get_factories(
             detail="Failed to retrieve factories"
         )
 
-@router.get("/factories/{factory_id}/", response_model=Dict[str, Any])
+@router.get("/factories/{factory_id}/", response_model=FactoryDetail)
 async def get_factory_by_id(
     factory_id: str,
     permitted = Depends(has_permission())
-):
+) -> FactoryDetail:
     """
     Get a specific factory by factory_code
     """
@@ -85,7 +96,7 @@ async def get_factory_by_id(
                 detail=f"Factory with code '{factory_id}' not found"
             )
         
-        logger.info(f"Retrieved factory: {factory_id}")
+        factory = FactoryDetail.model_validate(factory)
         return factory
         
     except HTTPException:
