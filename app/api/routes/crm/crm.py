@@ -1,9 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from typing import Dict, Any
-import logging
 import asyncio
+import logging
 from app.core.auth import has_permission
-from app.core.database import execute_sql_file
+from app.core.database import execute_query
 from app.core.pagination import Paginator
 from app.schemas.factories import PaginatedFactoryList, Factory, FactoryDetail
 from app.schemas.schema_helpers import validate_sql_results
@@ -14,37 +13,45 @@ router = APIRouter()
 @router.get("/factories/", response_model=PaginatedFactoryList)
 async def get_factories(
     request: Request,
-    is_active: bool = True,
-    has_onsite: bool = True,
+    is_active: bool = None,
+    has_onsite: bool = None,
     offset: int = 0,
     limit: int = 50,
     permitted = Depends(has_permission())
 ) -> PaginatedFactoryList:
 
     try:
-        # Execute queries concurrently
-        factories_task = execute_sql_file(
-            "app/api/routes/crm/sql/get_factories.sql",
-            params={
-                "is_active": is_active,
-                "has_onsite": has_onsite,
-                "offset": offset,
-                "limit": limit
-            },
+        factories_query = """
+        SELECT
+            factory_code,
+            factory_name,
+            is_active,
+            has_onsite
+        FROM dim_factory
+        WHERE ($1::boolean IS NULL OR is_active = $1)
+        AND ($2::boolean IS NULL OR has_onsite = $2)
+        LIMIT $3 OFFSET $4
+        """
+        
+        factories_task = execute_query(
+            query=factories_query,
+            params=(is_active, has_onsite, limit, offset),
             fetch_all=True
         )
         
-        count_task = execute_sql_file(
-            "app/api/routes/crm/sql/count_factories.sql",
-            params={
-                "is_active": is_active,
-                "has_onsite": has_onsite,
-            },
-            fetch_one=True,
-            fetch_all=False
+        count_query = """
+        SELECT COUNT (*)                     
+        FROM dim_factory
+        WHERE ($1::boolean IS NULL OR is_active = $1)
+        AND ($2::boolean IS NULL OR has_onsite = $2)
+        """
+
+        count_task = execute_query(
+            query=count_query,
+            params=(is_active, has_onsite),
+            fetch_one=True
         )
-        
-        # Await
+
         factories_data, count_result = await asyncio.gather(factories_task, count_task)
         
         # Validate data against schema
@@ -82,9 +89,19 @@ async def get_factory_by_id(
     Get a specific factory by factory_code
     """
     try:
-        factory = await execute_sql_file(
-            "app/api/routes/crm/sql/get_factory_by_id.sql",
-            params={"factory_id": factory_id},
+        query = """
+        SELECT
+            factory_code,
+            factory_name,
+            is_active,
+            has_onsite                         
+        FROM dim_factory
+        WHERE factory_code = $1
+        """
+        
+        factory = await execute_query(
+            query=query,
+            params=(factory_id,),
             fetch_one=True,
             fetch_all=False
         )
