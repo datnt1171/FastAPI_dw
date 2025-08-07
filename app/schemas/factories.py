@@ -1,5 +1,6 @@
 from pydantic import Field
 from .common import BaseRecord, PaginatedResponse
+from typing import Optional
 
 class Factory(BaseRecord):
     """Factory item for list view - matches your SQL SELECT"""
@@ -17,3 +18,7 @@ class FactoryDetail(BaseRecord):
 
 # Paginated responses
 PaginatedFactoryList = PaginatedResponse[Factory]
+
+class FactoryUpdate(BaseRecord):
+    is_active: Optional[bool] = Field(None, description="Active status")
+    has_onsite: Optional[bool] = Field(None, description="Has onsite facilities")

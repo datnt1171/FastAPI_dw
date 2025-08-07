@@ -60,7 +60,6 @@ async def execute_query(
     """
     async with db_manager.get_connection() as conn:
         try:
-            logger.info(params)
             if fetch_one:
                 result = await conn.fetchrow(query, *(params or ()))
                 return dict(result) if result else None
