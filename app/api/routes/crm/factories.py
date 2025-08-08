@@ -8,9 +8,9 @@ from app.schemas.factories import PaginatedFactoryList, Factory, FactoryDetail, 
 from app.schemas.schema_helpers import validate_sql_results
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/api/crm/factories", tags=["factories"])
 
-@router.get("/factories", response_model=PaginatedFactoryList)
+@router.get("", response_model=PaginatedFactoryList)
 async def get_factories(
     request: Request,
     is_active: bool = None,
@@ -82,7 +82,7 @@ async def get_factories(
             detail="Failed to retrieve factories"
         )
 
-@router.post("/factories", response_model=Factory, status_code=201)
+@router.post("", response_model=Factory, status_code=201)
 async def create_factory(
     factory: Factory,
     permitted = Depends(has_permission())
@@ -140,7 +140,7 @@ async def create_factory(
             detail="Failed to create factory"
         )
 
-@router.get("/factories/{factory_id}", response_model=FactoryDetail)
+@router.get("/{factory_id}", response_model=FactoryDetail)
 async def get_factory_by_id(
     factory_id: str,
     permitted = Depends(has_permission())
@@ -185,7 +185,7 @@ async def get_factory_by_id(
             detail="Failed to retrieve factory"
         )
     
-@router.patch("/factories/{factory_id}", response_model=Factory)
+@router.patch("/{factory_id}", response_model=Factory)
 async def update_factory(
     factory_id: str,
     factory_update: FactoryUpdate,
