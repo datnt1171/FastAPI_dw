@@ -1,7 +1,8 @@
-from pydantic import BaseModel, Field
+from pydantic import Field
 from typing import Optional
 from datetime import datetime
 from enum import Enum
+from uuid import UUID
 from app.schemas.common import BaseRecord
 
 class ProductionLineType(str, Enum):
@@ -35,7 +36,7 @@ class BlueprintUpdate(BaseRecord):
     description: Optional[str] = Field(None, description="Blueprint description")
 
 class Blueprint(BaseRecord):
-    id: str = Field(..., description="Blueprint UUID")
+    id: UUID = Field(..., description="Blueprint UUID")
     factory: str = Field(..., description="Factory code")
     name: str = Field(..., description="Blueprint name")
     type: ProductionLineType = Field(..., description="Production line type")

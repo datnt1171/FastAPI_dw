@@ -174,10 +174,10 @@ async def create_blueprint(
         # Insert blueprint record
         query = """
         INSERT INTO blueprint (
-            id, factory, name, type, description, 
+            factory, name, type, description, 
             file_path, filename, file_size
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING
             id,
             factory,
@@ -194,7 +194,6 @@ async def create_blueprint(
         blueprint_data = await execute_query(
             query=query,
             params=(
-                blueprint_id,
                 blueprint_form.factory,
                 blueprint_form.name,
                 blueprint_form.type.value,
@@ -268,7 +267,6 @@ async def update_blueprint(
                 detail="No fields to update"
             )
         
-        update_fields.append(f"updated_at = CURRENT_TIMESTAMP")
         params.append(blueprint_id)
         
         query = f"""
@@ -312,17 +310,38 @@ async def delete_blueprint(
 ):
     """Delete a blueprint"""
     try:
-        result = await execute_query(
-            query="DELETE FROM blueprint WHERE id = $1 RETURNING id",
+        # First, get the file path before deleting the record
+        blueprint_data = await execute_query(
+            query="SELECT file_path FROM blueprint WHERE id = $1",
             params=(blueprint_id,),
             fetch_one=True
         )
         
-        if not result:
+        if not blueprint_data:
             raise HTTPException(
                 status_code=404,
                 detail="Blueprint not found"
             )
+        
+        file_path = blueprint_data['file_path']
+        
+        # Delete from database first
+        await execute_query(
+            query="DELETE FROM blueprint WHERE id = $1",
+            params=(blueprint_id,),
+            fetch_one=False
+        )
+        
+        # Then delete the file
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(f"Deleted file: {file_path}")
+            else:
+                logger.warning(f"File not found for deletion: {file_path}")
+        except OSError as file_error:
+            # Log but don't fail the API call - database record is already deleted
+            logger.error(f"Failed to delete file {file_path}: {str(file_error)}")
             
     except HTTPException:
         raise
