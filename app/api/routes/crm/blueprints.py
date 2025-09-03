@@ -13,9 +13,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/crm/blueprints", tags=["blueprints"])
 
 # Configuration
-UPLOAD_DIR = Path("media/blueprints")
+UPLOAD_DIR = Path("/app/media/blueprints")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FILE_SIZE = 100 * 1024 * 1024
+
+def get_public_file_url(file_path: str) -> str:
+    """Convert internal file path to public URL"""
+    if not file_path:
+        return None
+    relative_path = Path(file_path).relative_to("/app/media")
+    return f"/dw-media/{relative_path}"
 
 def validate_svg_file(file: UploadFile) -> None:
     """Validate uploaded SVG file"""
@@ -27,12 +34,10 @@ def validate_svg_file(file: UploadFile) -> None:
 
 async def save_uploaded_file(file: UploadFile, blueprint_id: str) -> tuple[str, int]:
     """Save uploaded file and return (file_path, file_size)"""
-    # Generate unique filename
     file_extension = Path(file.filename).suffix
     unique_filename = f"{blueprint_id}{file_extension}"
     file_path = UPLOAD_DIR / unique_filename
     
-    # Read and save file
     content = await file.read()
     file_size = len(content)
     
@@ -53,16 +58,8 @@ async def get_blueprints(
     try:
         query = """
         SELECT
-            id,
-            factory,
-            name,
-            type,
-            description,
-            file_path,
-            filename,
-            file_size,
-            created_at,
-            updated_at
+            id, factory, name, type, description, 
+            file_path, filename, file_size, created_at, updated_at
         FROM blueprint
         WHERE ($1::text IS NULL OR factory = $1)
         ORDER BY created_at DESC
@@ -74,15 +71,18 @@ async def get_blueprints(
             fetch_all=True
         )
         
-        blueprints = validate_sql_results(blueprints_data or [], Blueprint)
+        blueprints = []
+        for data in blueprints_data or []:
+            blueprint = Blueprint(**data)
+            # Add dynamic URL
+            blueprint.file_url = get_public_file_url(blueprint.file_path)
+            blueprints.append(blueprint)
+        
         return blueprints
         
     except Exception as e:
         logger.error(f"Error retrieving blueprints: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve blueprints"
-        )
+        raise HTTPException(status_code=500, detail="Failed to retrieve blueprints")
 
 @router.get("/{blueprint_id}", response_model=Blueprint)
 async def get_blueprint(
@@ -93,16 +93,8 @@ async def get_blueprint(
     try:
         query = """
         SELECT
-            id,
-            factory,
-            name,
-            type,
-            description,
-            file_path,
-            filename,
-            file_size,
-            created_at,
-            updated_at
+            id, factory, name, type, description,
+            file_path, filename, file_size, created_at, updated_at
         FROM blueprint
         WHERE id = $1
         """
@@ -114,21 +106,19 @@ async def get_blueprint(
         )
         
         if not blueprint_data:
-            raise HTTPException(
-                status_code=404,
-                detail="Blueprint not found"
-            )
+            raise HTTPException(status_code=404, detail="Blueprint not found")
             
-        return Blueprint(**blueprint_data)
+        blueprint = Blueprint(**blueprint_data)
+        # Add dynamic URL
+        blueprint.file_url = get_public_file_url(blueprint.file_path)
+        
+        return blueprint
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error retrieving blueprint {blueprint_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve blueprint"
-        )
+        raise HTTPException(status_code=500, detail="Failed to retrieve blueprint")
 
 @router.post("", response_model=Blueprint, status_code=status.HTTP_201_CREATED)
 async def create_blueprint(
@@ -171,7 +161,7 @@ async def create_blueprint(
         # Save file
         file_path, file_size = await save_uploaded_file(file, blueprint_id)
         
-        # Insert blueprint record
+        # Insert blueprint record (no file_url in database)
         query = """
         INSERT INTO blueprint (
             factory, name, type, description, 
@@ -179,16 +169,8 @@ async def create_blueprint(
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING
-            id,
-            factory,
-            name,
-            type,
-            description,
-            file_path,
-            filename,
-            file_size,
-            created_at,
-            updated_at
+            id, factory, name, type, description,
+            file_path, filename, file_size, created_at, updated_at
         """
         
         blueprint_data = await execute_query(
@@ -205,7 +187,11 @@ async def create_blueprint(
             fetch_one=True
         )
         
-        return Blueprint(**blueprint_data)
+        blueprint = Blueprint(**blueprint_data)
+        # Add dynamic URL
+        blueprint.file_url = get_public_file_url(blueprint.file_path)
+        
+        return blueprint
         
     except HTTPException:
         raise

@@ -42,6 +42,7 @@ class Blueprint(BaseRecord):
     type: ProductionLineType = Field(..., description="Production line type")
     description: Optional[str] = Field(None, description="Blueprint description")
     file_path: str = Field(..., description="File storage path")
+    file_url: Optional[str] = Field(None, description="Dynamic public url")
     filename: str = Field(..., description="Original filename")
     file_size: int = Field(..., description="File size in bytes")
     created_at: datetime = Field(..., description="Creation timestamp")
