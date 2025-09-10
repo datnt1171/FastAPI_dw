@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 import asyncio
 import logging
 
@@ -21,12 +21,17 @@ router = APIRouter(prefix="/api/crm/retailers", tags=["retailers"])
 async def get_retailers(
     request: Request,
     search: str = None,
-    offset: int = 0,
-    limit: int = 50,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1),
     permitted = Depends(has_permission())
 ) -> PaginatedRetailerList:
 
     try:
+        # Create paginator to get offset and limit
+        paginator = Paginator(request, page, page_size)
+        limit = paginator.limit
+        offset = paginator.offset
+
         retailers_query = """
         SELECT
             id,
@@ -60,8 +65,6 @@ async def get_retailers(
         retailers = validate_sql_results(retailers_data or [], Retailer)
         total_count = count_result.get('count', 0) if count_result else 0
         
-        # Create paginator and return paginated response
-        paginator = Paginator(request, offset, limit)
         paginated_response = paginator.paginate(
             [item.model_dump() for item in retailers], 
             total_count

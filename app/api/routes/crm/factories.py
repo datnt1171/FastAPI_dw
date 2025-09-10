@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 import asyncio
 import logging
 from app.core.auth import has_permission
@@ -16,12 +16,17 @@ async def get_factories(
     is_active: bool = None,
     has_onsite: bool = None,
     search: str = None,
-    offset: int = 0,
-    limit: int = 50,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1),
     permitted = Depends(has_permission())
 ) -> PaginatedFactoryList:
 
     try:
+        # Create paginator to get offset and limit
+        paginator = Paginator(request, page, page_size)
+        limit = paginator.limit
+        offset = paginator.offset
+
         factories_query = """
         SELECT
             factory_code,
@@ -61,8 +66,6 @@ async def get_factories(
         factories = validate_sql_results(factories_data or [], Factory)
         total_count = count_result.get('count', 0) if count_result else 0
         
-        # Create paginator and return paginated response
-        paginator = Paginator(request, offset, limit)
         paginated_response = paginator.paginate(
             [item.model_dump() for item in factories], 
             total_count

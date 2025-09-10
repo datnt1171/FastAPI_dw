@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Any, Generic, TypeVar
 from urllib.parse import urlencode
 from fastapi import Request
 from pydantic import BaseModel
+from math import ceil
 
 T = TypeVar('T')
 
@@ -13,12 +14,22 @@ class PaginatedResponse(BaseModel, Generic[T]):
     results: List[T]
 
 class Paginator:
-    def __init__(self, request: Request, offset: int = 0, limit: int = 50):
+    def __init__(self, request: Request, page: int = 1, page_size: int = 50):
         self.request = request
-        self.offset = offset
-        self.limit = limit
+        self.page = page
+        self.page_size = page_size
         self.base_url = str(request.url).split('?')[0]
         self.query_params = dict(request.query_params)
+    
+    @property
+    def offset(self) -> int:
+        """Convert page-based pagination to offset"""
+        return (self.page - 1) * self.page_size
+    
+    @property
+    def limit(self) -> int:
+        """Return the page size as limit"""
+        return self.page_size
     
     def paginate(self, results: List[Dict[str, Any]], total_count: int) -> Dict[str, Any]:
         """
@@ -37,30 +48,32 @@ class Paginator:
     
     def _get_next_url(self, total_count: int) -> Optional[str]:
         """Generate next page URL if there are more results"""
-        if self.offset + self.limit >= total_count:
+        total_pages = ceil(total_count / self.page_size)
+        
+        if self.page >= total_pages:
             return None
         
         params = self.query_params.copy()
-        params['offset'] = self.offset + self.limit
-        params['limit'] = self.limit
+        params['page'] = self.page + 1
+        params['page_size'] = self.page_size
         
         return f"{self.base_url}?{urlencode(params)}"
     
     def _get_previous_url(self) -> Optional[str]:
         """Generate previous page URL if not on first page"""
-        if self.offset <= 0:
+        if self.page <= 1:
             return None
         
         params = self.query_params.copy()
-        previous_offset = max(0, self.offset - self.limit)
+        previous_page = self.page - 1
         
-        if previous_offset == 0:
-            # For first page, only include limit if it's not the default
-            params.pop('offset', None)
-            if self.limit != 50:  # Assuming 50 is your default
-                params['limit'] = self.limit
+        if previous_page == 1:
+            # For first page, remove page parameter but keep page_size if not default
+            params.pop('page', None)
+            if self.page_size != 50:  # Assuming 50 is your default
+                params['page_size'] = self.page_size
         else:
-            params['offset'] = previous_offset
-            params['limit'] = self.limit
+            params['page'] = previous_page
+            params['page_size'] = self.page_size
         
         return f"{self.base_url}?{urlencode(params)}"
