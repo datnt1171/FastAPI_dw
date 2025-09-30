@@ -31,6 +31,7 @@ async def get_factories(
         SELECT
             factory_code,
             factory_name,
+            salesman,
             is_active,
             has_onsite
         FROM dim_factory
@@ -156,6 +157,7 @@ async def get_factory_by_id(
         SELECT
             factory_code,
             factory_name,
+            salesman,
             is_active,
             has_onsite                         
         FROM dim_factory

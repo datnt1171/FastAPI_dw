@@ -6,6 +6,7 @@ class Factory(BaseRecord):
     """Factory item for list view - matches your SQL SELECT"""
     factory_code: str = Field(..., description="Factory code")
     factory_name: str = Field(..., description="Factory name")
+    salesman: str = Field(description="Sales Reps")
     is_active: bool = Field(..., description="Active status")
     has_onsite: bool = Field(..., description="Has onsite facilities")
 
@@ -13,6 +14,7 @@ class FactoryDetail(BaseRecord):
     """Detailed factory view - for single factory endpoint"""
     factory_code: str = Field(..., description="Factory code")
     factory_name: str = Field(..., description="Factory name")
+    salesman: str = Field(description="Sales Reps")
     is_active: bool = Field(..., description="Active status")
     has_onsite: bool = Field(..., description="Has onsite facilities")
 
