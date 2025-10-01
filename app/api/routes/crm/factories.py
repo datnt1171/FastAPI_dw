@@ -250,7 +250,7 @@ async def update_factory(
         UPDATE dim_factory 
         SET {', '.join(set_clauses)}
         WHERE factory_code = ${param_count}
-        RETURNING factory_code, factory_name, is_active, has_onsite
+        RETURNING factory_code, factory_name, salesman, is_active, has_onsite
         """
         
         updated_factory = await execute_query(
