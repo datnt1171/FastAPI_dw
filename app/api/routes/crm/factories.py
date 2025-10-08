@@ -37,7 +37,7 @@ async def get_factories(
         FROM dim_factory
         WHERE ($1::boolean IS NULL OR is_active = $1)
         AND ($2::boolean IS NULL OR has_onsite = $2)
-        AND ($3::text IS NULL OR factory_name ILIKE '%' || $3 || '%')
+        AND ($3::text IS NULL OR factory_name ILIKE '%' || $3 || '%' OR factory_code ILIKE '%' || $3 || '%')
         LIMIT $4 OFFSET $5
         """
         
@@ -52,7 +52,7 @@ async def get_factories(
         FROM dim_factory
         WHERE ($1::boolean IS NULL OR is_active = $1)
         AND ($2::boolean IS NULL OR has_onsite = $2)
-        AND ($3::text IS NULL OR factory_name ILIKE '%' || $3 || '%')
+        AND ($3::text IS NULL OR factory_name ILIKE '%' || $3 || '%' OR factory_code ILIKE '%' || $3 || '%')
         """
 
         count_task = execute_query(
