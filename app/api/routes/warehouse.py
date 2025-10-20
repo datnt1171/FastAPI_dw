@@ -1,17 +1,24 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 import logging
-from typing import List
+from typing import List, Optional
 from app.core.auth import has_permission
 from app.core.database import execute_query
-from app.schemas.warehouse import Overall
-from app.schemas.schema_helpers import validate_sql_results
+from app.schemas.warehouse import (Overall,
+                                   FactorySalesRangeDiff, FactoryOrderRangeDiff,
+                                   ProductSalesRangeDiff, ProductOrderRangeDiff,
+                                   ScheduledAndActualSales,
+                                   IsSameMonth, SalesOrderPctDiff,
+                                   ThinnerPaintRatio, ProductType, PivotThinnerPaintRatio,
+                                   )
+from app.schemas.common import DateRangeParams, DateRangeTargetParams, TIME_GROUP_BY_MAPPING
 from datetime import datetime
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/warehouse", tags=["warehouse"])
 
 @router.get("/overall", response_model=List[Overall])
-async def get_overall_warehouse_data(
+async def get_overall(
     day__gte: int = Query(1, ge=1, le=31, description="Start day"),
     day__lte: int = Query(31, ge=1, le=31, description="End day"),
     month__gte: int = Query(1, ge=1, le=12, description="Start month"),
@@ -138,12 +145,749 @@ async def get_overall_warehouse_data(
             logger.warning("No data found for the specified criteria")
             return []
 
-        overall_data = validate_sql_results(overall_result, Overall)
-        return overall_data
+        return overall_result
 
     except Exception as e:
         logger.error(f"Error retrieving overall_data: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retrieve overall_data: {str(e)}"
+        )
+
+
+@router.get("/factory-sales-range-diff", response_model=List[FactorySalesRangeDiff])
+async def get_factory_sales_range_diff(
+    date_range: DateRangeParams = Depends(),
+    date_range_target: DateRangeTargetParams = Depends(),
+    threshold: int = 1000,
+    increase: bool = False,
+    permitted = Depends(has_permission())
+) -> List[FactorySalesRangeDiff]:
+    """
+    Get sales by factories for 2 date range, whole month sales and scheduled delivery
+    Return the diff of these 2 date range
+    """
+    quantity_filter = "sd.quantity_diff > 0" if increase else "sd.quantity_diff < 0"
+    order_clause = "sd.quantity_diff DESC" if increase else "sd.quantity_diff ASC"
+
+    try:
+        query = """WITH date_range_sales AS (
+                    SELECT factory_code, SUM(sales_quantity) AS sales_quantity
+                    FROM fact_sales
+                    WHERE sales_date BETWEEN $1 AND $2
+                    GROUP BY factory_code
+                ),
+                date_range_target_sales AS (
+                    SELECT factory_code, SUM(sales_quantity) AS sales_quantity_target
+                    FROM fact_sales
+                    WHERE sales_date BETWEEN $3 AND $4
+                    GROUP BY factory_code
+                ),
+                sales_diff AS (
+                    SELECT
+                        COALESCE(drs.factory_code, drts.factory_code) AS factory_code,
+                        COALESCE(drs.sales_quantity, 0) AS sales_quantity,
+                        COALESCE(drts.sales_quantity_target, 0) AS sales_quantity_target,
+                        (COALESCE(drs.sales_quantity, 0) - COALESCE(drts.sales_quantity_target, 0)) AS quantity_diff,
+                        ABS(COALESCE(drs.sales_quantity, 0) - COALESCE(drts.sales_quantity_target, 0)) AS quantity_diff_abs
+                    FROM date_range_sales drs
+                    FULL OUTER JOIN date_range_target_sales drts
+                        ON drs.factory_code = drts.factory_code
+                    WHERE ABS(COALESCE(drs.sales_quantity, 0) - COALESCE(drts.sales_quantity_target, 0)) >= $5
+                ),
+                whole_month_sales AS (
+                    SELECT fs.factory_code, SUM(fs.sales_quantity) AS whole_month_sales_quantity
+                    FROM fact_sales fs
+                    JOIN dim_date dd ON fs.sales_date = dd.date
+                    WHERE dd.year = EXTRACT(YEAR FROM CAST($1 AS DATE))
+                        AND dd.month = EXTRACT(MONTH FROM CAST($1 AS DATE))
+                        AND fs.factory_code IN (SELECT factory_code FROM sales_diff)
+                    GROUP BY fs.factory_code
+                ),
+                planned_deliveries AS (
+                    SELECT factory_code, SUM(order_quantity) AS planned_deliveries
+                    FROM fact_order
+                    WHERE estimated_delivery_date BETWEEN
+                        CAST($2 AS DATE) + 1
+                        AND (DATE_TRUNC('month', CAST($2 AS DATE)) + INTERVAL '1 month' - INTERVAL '1 day')::DATE
+                        AND factory_code IN (SELECT factory_code FROM sales_diff)
+                    GROUP BY factory_code
+                )
+                SELECT
+                    df.factory_code,
+                    df.factory_name,
+                    df.salesman,
+                    sd.sales_quantity,
+                    sd.sales_quantity_target,
+                    sd.quantity_diff,
+                    sd.quantity_diff_abs,
+                    COALESCE(sd.quantity_diff / NULLIF(sd.sales_quantity_target, 0), 1) AS quantity_diff_pct,
+                    COALESCE(wms.whole_month_sales_quantity, 0) AS whole_month_sales_quantity,
+                    COALESCE(pd.planned_deliveries, 0) AS planned_deliveries
+                FROM sales_diff sd
+                JOIN dim_factory df ON sd.factory_code = df.factory_code
+                LEFT JOIN whole_month_sales wms ON sd.factory_code = wms.factory_code
+                LEFT JOIN planned_deliveries pd ON sd.factory_code = pd.factory_code
+                WHERE {quantity_filter}
+                ORDER BY {order_clause}
+                """.format(quantity_filter=quantity_filter, order_clause=order_clause)
+        
+        result = await execute_query(
+            query=query,
+            params=(date_range.date__gte,
+                    date_range.date__lte,
+                    date_range_target.date_target__gte,
+                    date_range_target.date_target__lte,
+                    threshold
+                    ),
+            fetch_all=True
+        )
+
+        if not result:
+            logger.warning("No data found for the specified criteria")
+            return []
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error retrieving factory-sales-range-diff: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve factory-sales-range-diff: {str(e)}"
+        )
+
+
+@router.get("/factory-order-range-diff", response_model=List[FactoryOrderRangeDiff])
+async def get_factory_order_range_diff(
+    date_range: DateRangeParams = Depends(),
+    date_range_target: DateRangeTargetParams = Depends(),
+    threshold: int = 1000,
+    increase: bool = False,
+    permitted = Depends(has_permission())
+) -> List[FactoryOrderRangeDiff]:
+    """
+    Get order by factories for 2 date range, whole month order and scheduled delivery
+    Return the diff of these 2 date range
+    """
+    quantity_filter = "od.quantity_diff > 0" if increase else "od.quantity_diff < 0"
+    order_clause = "od.quantity_diff DESC" if increase else "od.quantity_diff ASC"
+
+    try:
+        query = """WITH date_range_order AS (
+                    SELECT factory_code, SUM(order_quantity) AS order_quantity
+                    FROM fact_order
+                    WHERE order_date BETWEEN $1 AND $2
+                    GROUP BY factory_code
+                ),
+                date_range_target_order AS (
+                    SELECT factory_code, SUM(order_quantity) AS order_quantity_target
+                    FROM fact_order
+                    WHERE order_date BETWEEN $3 AND $4
+                    GROUP BY factory_code
+                ),
+                order_diff AS (
+                    SELECT 
+                        COALESCE(dro.factory_code, drto.factory_code) AS factory_code,
+                        COALESCE(dro.order_quantity, 0) AS order_quantity,
+                        COALESCE(drto.order_quantity_target, 0) AS order_quantity_target,
+                        (COALESCE(dro.order_quantity, 0) - COALESCE(drto.order_quantity_target, 0)) AS quantity_diff,
+                        ABS(COALESCE(dro.order_quantity, 0) - COALESCE(drto.order_quantity_target, 0)) AS quantity_diff_abs
+                    FROM date_range_order dro
+                    FULL OUTER JOIN date_range_target_order drto
+                        ON dro.factory_code = drto.factory_code
+                    WHERE ABS(COALESCE(dro.order_quantity, 0) - COALESCE(drto.order_quantity_target, 0)) >= $5
+                ),
+                whole_month_order AS (
+                    SELECT fo.factory_code, SUM(fo.order_quantity) AS whole_month_order_quantity
+                    FROM fact_order fo
+                    JOIN dim_date dd ON fo.order_date = dd.date
+                    WHERE dd.year = EXTRACT(YEAR FROM CAST($1 AS DATE))
+                    AND dd.month = EXTRACT(MONTH FROM CAST($1 AS DATE))
+                    AND fo.factory_code IN (SELECT factory_code FROM order_diff)
+                    GROUP BY fo.factory_code
+                ),
+                planned_deliveries AS (
+                    SELECT factory_code, SUM(order_quantity) AS planned_deliveries
+                    FROM fact_order
+                    WHERE estimated_delivery_date BETWEEN
+                        CAST($2 AS DATE) + 1
+                        AND (DATE_TRUNC('month', CAST($2 AS DATE)) + INTERVAL '1 month' - INTERVAL '1 day')::DATE
+                    AND factory_code IN (SELECT factory_code FROM order_diff)
+                    GROUP BY factory_code
+                )
+                SELECT 
+                    df.factory_code, 
+                    df.factory_name, 
+                    df.salesman,
+                    od.order_quantity,
+                    od.order_quantity_target,
+                    od.quantity_diff,
+                    od.quantity_diff_abs,
+                    COALESCE(od.quantity_diff / NULLIF(od.order_quantity_target, 0), 1) AS quantity_diff_pct,
+                    COALESCE(wmo.whole_month_order_quantity, 0) AS whole_month_order_quantity,
+                    COALESCE(pd.planned_deliveries, 0) AS planned_deliveries
+                FROM order_diff od
+                JOIN dim_factory df ON od.factory_code = df.factory_code
+                LEFT JOIN whole_month_order wmo ON od.factory_code = wmo.factory_code
+                LEFT JOIN planned_deliveries pd ON od.factory_code = pd.factory_code
+                WHERE {quantity_filter}
+                ORDER BY {order_clause}
+                """.format(quantity_filter=quantity_filter, order_clause=order_clause)
+        
+        result = await execute_query(
+            query=query,
+            params=(date_range.date__gte,
+                    date_range.date__lte,
+                    date_range_target.date_target__gte,
+                    date_range_target.date_target__lte,
+                    threshold
+                    ),
+            fetch_all=True
+        )
+
+        if not result:
+            logger.warning("No data found for the specified criteria")
+            return []
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error retrieving factory-order-range-diff: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve factory-order-range-diff: {str(e)}"
+        )
+
+
+@router.get("/product-sales-range-diff", response_model=List[ProductSalesRangeDiff])
+async def get_factory_sales_range_diff(
+    date_range: DateRangeParams = Depends(),
+    date_range_target: DateRangeTargetParams = Depends(),
+    factory: Optional[str] = None,
+    permitted = Depends(has_permission())
+) -> List[ProductSalesRangeDiff]:
+    """
+    Get sales by product for 2 date range
+    Return the diff of these 2 date range
+    """
+    # Parse factory codes if provided
+    factory_codes = []
+    if factory:
+        factory_codes = [code.strip() for code in factory.split(',')]
+
+    factory_filter = ""
+    params = [
+        date_range.date__gte,
+        date_range.date__lte,
+        date_range_target.date_target__gte,
+        date_range_target.date_target__lte
+    ]
+    
+    if factory_codes:
+        # Create placeholders for factory codes: $5, $6, $7, etc. 1-4 is date range and date range target
+        placeholders = ', '.join([f'${i+5}' for i in range(len(factory_codes))])
+        factory_filter = f"AND factory_code IN ({placeholders})"
+        params.extend(factory_codes)
+
+    try:
+        query = """WITH date_range_sales AS (
+                    SELECT product_name, SUM(sales_quantity) AS sales_quantity
+                    FROM fact_sales
+                    WHERE sales_date BETWEEN $1 AND $2 
+                        {factory_filter}
+                    GROUP BY product_name
+                ),
+                date_range_target_sales AS (
+                    SELECT product_name, SUM(sales_quantity) AS sales_quantity_target
+                    FROM fact_sales
+                    WHERE sales_date BETWEEN $3 AND $4 
+                        {factory_filter}
+                    GROUP BY product_name
+                )
+                SELECT 
+                    COALESCE(drs.product_name, drts.product_name) AS product_name,
+                    COALESCE(drs.sales_quantity, 0) AS sales_quantity,
+                    COALESCE(drts.sales_quantity_target, 0) AS sales_quantity_target,
+                    (COALESCE(drs.sales_quantity, 0) - COALESCE(drts.sales_quantity_target, 0)) AS quantity_diff,
+                    ABS(COALESCE(drs.sales_quantity, 0) - COALESCE(drts.sales_quantity_target, 0)) AS quantity_diff_abs
+                FROM date_range_sales drs
+                FULL OUTER JOIN date_range_target_sales drts 
+                    ON drs.product_name = drts.product_name
+                ORDER BY quantity_diff
+                """.format(factory_filter=factory_filter)
+        
+        result = await execute_query(
+            query=query,
+            params=tuple(params),
+            fetch_all=True
+        )
+
+        if not result:
+            logger.warning("No data found for the specified criteria")
+            return []
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error retrieving product-sales-range-diff: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve product-sales-range-diff: {str(e)}"
+        )
+
+
+@router.get("/product-order-range-diff", response_model=List[ProductOrderRangeDiff])
+async def get_factory_order_range_diff(
+    date_range: DateRangeParams = Depends(),
+    date_range_target: DateRangeTargetParams = Depends(),
+    factory: Optional[str] = None,
+    permitted = Depends(has_permission())
+) -> List[ProductOrderRangeDiff]:
+    """
+    Get order by product for 2 date range
+    Return the diff of these 2 date range
+    """
+    # Parse factory codes if provided
+    factory_codes = []
+    if factory:
+        factory_codes = [code.strip() for code in factory.split(',')]
+
+    factory_filter = ""
+    params = [
+        date_range.date__gte,
+        date_range.date__lte,
+        date_range_target.date_target__gte,
+        date_range_target.date_target__lte
+    ]
+    
+    if factory_codes:
+        # Create placeholders for factory codes: $5, $6, $7, etc. 1-4 is date range and date range target
+        placeholders = ', '.join([f'${i+5}' for i in range(len(factory_codes))])
+        factory_filter = f"AND factory_code IN ({placeholders})"
+        params.extend(factory_codes)
+
+    try:
+        query = """WITH date_range_order AS (
+                    SELECT product_name, SUM(order_quantity) AS order_quantity
+                    FROM fact_order
+                    WHERE order_date BETWEEN $1 AND $2 
+                        {factory_filter}
+                    GROUP BY product_name
+                ),
+                date_range_target_order AS (
+                    SELECT product_name, SUM(order_quantity) AS order_quantity_target
+                    FROM fact_order
+                    WHERE order_date BETWEEN $3 AND $4 
+                        {factory_filter}
+                    GROUP BY product_name
+                )
+                SELECT 
+                    COALESCE(drs.product_name, drts.product_name) AS product_name,
+                    COALESCE(drs.order_quantity, 0) AS order_quantity,
+                    COALESCE(drts.order_quantity_target, 0) AS order_quantity_target,
+                    (COALESCE(drs.order_quantity, 0) - COALESCE(drts.order_quantity_target, 0)) AS quantity_diff,
+                    ABS(COALESCE(drs.order_quantity, 0) - COALESCE(drts.order_quantity_target, 0)) AS quantity_diff_abs
+                FROM date_range_order drs
+                    FULL OUTER JOIN date_range_target_order drts ON drs.product_name = drts.product_name
+                ORDER BY quantity_diff
+                """.format(factory_filter=factory_filter)
+        
+        result = await execute_query(
+            query=query,
+            params=tuple(params),
+            fetch_all=True
+        )
+
+        if not result:
+            logger.warning("No data found for the specified criteria")
+            return []
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error retrieving product-order-range-diff: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve product-order-range-diff: {str(e)}"
+        )
+    
+
+@router.get("/scheduled-and-actual-sales", response_model=List[ScheduledAndActualSales])
+async def get_scheduled_and_actual_sales(
+    year: int = Query(datetime.now().year, ge=2020, le=datetime.now().year, description="Year"),
+    factory: Optional[str] = None,
+    permitted = Depends(has_permission())
+) -> List[ScheduledAndActualSales]:
+    """
+    Compare scheduled deriveries and actual sales group by month
+    """
+
+    try:
+        # Build query conditionally
+        factory_filter_sales = "AND fs.factory_code = $2" if factory else ""
+        factory_filter_order = "AND fo.factory_code = $2" if factory else ""
+        
+        query = f"""WITH actual_sales AS (
+                    SELECT 
+                        EXTRACT(MONTH FROM fs.sales_date) AS sales_month,
+                        SUM(fs.sales_quantity) AS sales_quantity
+                    FROM fact_sales fs
+                    JOIN dim_date dd ON dd.date = fs.sales_date
+                    WHERE dd.year = $1
+                    {factory_filter_sales}
+                    GROUP BY EXTRACT(MONTH FROM fs.sales_date)
+                ),
+                scheduled_delivery AS (
+                    SELECT 
+                        EXTRACT(MONTH FROM fo.estimated_delivery_date) AS scheduled_month,
+                        SUM(fo.order_quantity) AS scheduled_quantity
+                    FROM fact_order fo
+                    JOIN dim_date dd ON dd.date = fo.estimated_delivery_date
+                    WHERE dd.year = $1
+                    {factory_filter_order}
+                    GROUP BY EXTRACT(MONTH FROM fo.estimated_delivery_date)
+                )
+                SELECT 
+                    sd.scheduled_month,
+                    sd.scheduled_quantity,
+                    COALESCE(acs.sales_quantity, 0) AS sales_quantity,
+                    (COALESCE(acs.sales_quantity, 0) / sd.scheduled_quantity) AS sales_pct
+                FROM scheduled_delivery sd
+                LEFT JOIN actual_sales acs ON sd.scheduled_month = acs.sales_month
+                ORDER BY sd.scheduled_month;
+                """
+        
+        params = (year, factory) if factory else (year,)
+        
+        result = await execute_query(
+            query=query,
+            params=params,
+            fetch_all=True
+        )
+
+        if not result:
+            logger.warning("No data found for the specified criteria")
+            return []
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error retrieving scheduled-and-actual-sales: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve scheduled-and-actual-sales: {str(e)}"
+        )
+
+
+@router.get("/sales-overtime")
+async def get_sales_pivot(
+    years: str = Query(..., description="Comma-separated years (e.g., 2023,2024)"),
+    group_by: str = Query(..., description="Comma-separated group by fields (e.g., year,quarter)"),
+    factory: Optional[str] = None,
+    product: Optional[str] = None,
+    permitted = Depends(has_permission())
+):
+    """
+    Pivot table for sales data with dynamic grouping
+    """
+    try:
+        # Parse comma-separated values
+        years_list = [int(y.strip()) for y in years.split(",")]
+        group_by_list = [field.strip() for field in group_by.split(",")]
+        
+        # Validate group_by fields
+        if not group_by_list:
+            raise HTTPException(status_code=400, detail="At least one group_by field required")
+        
+        invalid_fields = [f for f in group_by_list if f not in TIME_GROUP_BY_MAPPING]
+        if invalid_fields:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid group_by fields: {', '.join(invalid_fields)}. Valid options: {', '.join(TIME_GROUP_BY_MAPPING.keys())}"
+            )
+        
+        # Build SELECT clause
+        select_fields = [TIME_GROUP_BY_MAPPING[field] for field in group_by_list]
+        select_clause = ", ".join(select_fields)
+        
+        # Build GROUP BY clause
+        group_by_fields = [TIME_GROUP_BY_MAPPING[field] for field in group_by_list]
+        group_by_clause = ", ".join(group_by_fields)
+        
+        # Build ORDER BY clause (same as GROUP BY)
+        order_by_clause = ", ".join(group_by_fields)
+        
+        # Build params list and filters dynamically
+        params = [years_list]  # $1
+        param_index = 2
+        
+        factory_filter = ""
+        if factory:
+            factory_filter = f"AND fs.factory_code = ${param_index}"
+            params.append(factory)
+            param_index += 1
+        
+        product_filter = ""
+        if product:
+            product_filter = f"AND fs.product_code = ${param_index}"
+            params.append(product)
+            param_index += 1
+        
+        query = f"""
+            SELECT
+                {select_clause},
+                SUM(fs.sales_quantity) as sales_quantity
+            FROM fact_sales fs
+            JOIN dim_factory df ON fs.factory_code = df.factory_code
+            JOIN dim_product dp ON fs.product_code = dp.product_code
+            JOIN dim_date dd ON fs.sales_date = dd.date
+            WHERE dd.year = ANY($1)
+            {factory_filter}
+            {product_filter}
+            GROUP BY {group_by_clause}
+            ORDER BY {order_by_clause}
+        """
+        
+        result = await execute_query(
+            query=query,
+            params=tuple(params),
+            fetch_all=True
+        )
+        return result
+    
+    except Exception as e:
+        logger.error(f"Error retrieving scheduled-and-actual-sales: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve scheduled-and-actual-sales: {str(e)}"
+        )
+
+@router.get("/is-same-month", response_model=List[IsSameMonth])
+async def get_sales_pivot(
+    date_range: DateRangeParams = Depends(),
+    date_range_target: DateRangeTargetParams = Depends(),
+    permitted = Depends(has_permission())
+) -> List[IsSameMonth]:
+    
+    try:
+
+        query = """WITH base_data AS (
+                    SELECT
+                        d_sales.year,
+                        d_sales.month,
+                        SUM(fs.sales_quantity) AS sales_quantity,
+                        SUM(fo.order_quantity) AS order_quantity,
+                        CASE
+                            WHEN d_sales.month = d_order.month AND d_sales.year = d_order.year THEN 1
+                            ELSE 0
+                        END AS is_same_month
+                    FROM fact_sales fs
+                    JOIN fact_order fo ON fs.order_code = fo.order_code
+                    JOIN dim_date d_sales ON fs.sales_date = d_sales.date
+                    JOIN dim_date d_order ON fo.order_date = d_order.date
+                    WHERE d_sales.date BETWEEN $1 AND $2
+                    OR d_sales.date BETWEEN $3 AND $4
+                    GROUP BY d_sales.year, d_sales.month, is_same_month
+                )
+                SELECT
+                    year,
+                    month,
+                    SUM(CASE WHEN is_same_month = 1 THEN sales_quantity ELSE 0 END) AS same_month_sales,
+                    SUM(CASE WHEN is_same_month = 0 THEN sales_quantity ELSE 0 END) AS diff_month_sales,
+                    SUM(sales_quantity) AS total_sales,
+                    SUM(CASE WHEN is_same_month = 1 THEN order_quantity ELSE 0 END) AS same_month_order,
+                    SUM(CASE WHEN is_same_month = 0 THEN order_quantity ELSE 0 END) AS diff_month_order,
+                    SUM(order_quantity) AS total_order
+                FROM base_data
+                GROUP BY year, month
+                ORDER BY year, month
+                """
+
+        result = await execute_query(
+            query=query,
+            params=(
+                date_range.date__gte,
+                date_range.date__lte,
+                date_range_target.date_target__gte,
+                date_range_target.date_target__lte
+            ),
+            fetch_all=True
+        )
+        return result
+    
+    except Exception as e:
+        logger.error(f"Error retrieving is-same-month: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve is-same-month: {str(e)}"
+        )
+
+@router.get("/sales-order-pct-diff", response_model=List[SalesOrderPctDiff])
+async def get_sales_pivot(
+    date_range: DateRangeParams = Depends(),
+    date_range_target: DateRangeTargetParams = Depends(),
+    exclude_factory: str = Query('30673', description="Factory code to exclude"),
+    permitted = Depends(has_permission())
+) -> List[SalesOrderPctDiff]:
+    try:
+        
+        query = """WITH monthly_data AS (
+                    SELECT
+                        dd.year,
+                        dd.month,
+                        SUM(fs.sales_quantity) AS sales_quantity,
+                        SUM(CASE WHEN fs.factory_code = $5 THEN fs.sales_quantity ELSE 0 END) AS exclude_sales,
+                        SUM(fo.order_quantity) AS order_quantity,
+                        SUM(CASE WHEN fo.factory_code = $5 THEN fo.order_quantity ELSE 0 END) AS exclude_order
+                    FROM dim_date dd
+                        LEFT JOIN fact_sales fs ON fs.sales_date = dd.date
+                        LEFT JOIN fact_order fo ON fo.order_date = dd.date
+                    WHERE dd.date BETWEEN $1 AND $2
+                        OR dd.date BETWEEN $3 AND $4
+                    GROUP BY dd.year, dd.month
+                )
+                SELECT
+                    year,
+                    month,
+                    sales_quantity,
+                    (LAG(sales_quantity, 1, sales_quantity) OVER (ORDER BY year, month) / sales_quantity) - 1 AS sales_pct_diff,
+                    sales_quantity - exclude_sales AS remain_sales_quantity,
+                    (LAG(sales_quantity - exclude_sales, 1, sales_quantity - exclude_sales) OVER (ORDER BY year, month) / (sales_quantity - exclude_sales)) - 1 AS remain_sales_pct_diff,
+                    order_quantity,
+                    (LAG(order_quantity, 1, order_quantity) OVER (ORDER BY year, month) / order_quantity) - 1 AS order_pct_diff,
+                    order_quantity - exclude_order AS remain_order_quantity,
+                    (LAG(order_quantity - exclude_order, 1, order_quantity - exclude_order) OVER (ORDER BY year, month) / (order_quantity - exclude_order)) - 1 AS remain_order_pct_diff
+                FROM monthly_data
+                ORDER BY year, month
+                """
+
+        result = await execute_query(
+            query=query,
+            params=(
+                date_range.date__gte,
+                date_range.date__lte,
+                date_range_target.date_target__gte,
+                date_range_target.date_target__lte,
+                exclude_factory
+            ),
+            fetch_all=True
+        )
+        return result
+    
+    except Exception as e:
+        logger.error(f"Error retrieving sales-order-pct-diff: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve sales-order-pct-diff: {str(e)}"
+        )
+
+
+@router.get("/thinner-paint-ratio", response_model=PivotThinnerPaintRatio)
+async def get_sales_pivot(
+    year: int = Query(datetime.now().year, ge=2020, le=datetime.now().year, description="Year"),
+    thinners: List[ProductType] = Query(
+        default=["原料溶劑 NL DUNG MOI", "成品溶劑DUNG MOI TP"],
+        description="Thinner product types"
+    ),
+    paint: List[ProductType] = Query(
+        default=["烤調色PM HAP", "木調色PM GO", "底漆 LOT", "面漆 BONG"],
+        description="Paint product types"
+    )
+) -> PivotThinnerPaintRatio:
+    try:
+        thinner_placeholders = ", ".join([f"${i+2}" for i in range(len(thinners))])
+        paint_placeholders = ", ".join([f"${i+2+len(thinners)}" for i in range(len(paint))])
+        
+        query = f"""WITH thinner_paint_sales AS (
+                    SELECT
+                        df.factory_code,
+                        df.factory_name,
+                        dd.month,
+                        SUM(CASE WHEN dp.product_type IN ({thinner_placeholders}) 
+                            THEN fs.sales_quantity ELSE 0 END) as sales_thinner_quantity,
+                        SUM(CASE WHEN dp.product_type IN ({paint_placeholders}) 
+                            THEN fs.sales_quantity ELSE 0 END) as sales_paint_quantity
+                    FROM fact_sales fs
+                    JOIN dim_date dd ON fs.sales_date = dd.date
+                    JOIN dim_factory df ON fs.factory_code = df.factory_code
+                    JOIN dim_product dp ON fs.product_code = dp.product_code
+                    WHERE dd.year = $1
+                    GROUP BY df.factory_code, df.factory_name, dd.month
+                )
+                SELECT 
+                    factory_code,
+                    factory_name,
+                    month,
+                    sales_thinner_quantity,
+                    sales_paint_quantity,
+                    COALESCE(sales_thinner_quantity / NULLIF(sales_paint_quantity, 0), 0) AS ratio
+                FROM thinner_paint_sales
+                WHERE sales_thinner_quantity != 0
+                OR sales_paint_quantity != 0
+                ORDER BY factory_code, month
+            """
+        
+        params = [year] + list(thinners) + list(paint)
+        
+        result = await execute_query(
+            query=query,
+            params=tuple(params),
+            fetch_all=True
+        )
+
+        # Convert to DataFrame
+        df = pd.DataFrame(result)
+        
+        if df.empty:
+            return PivotThinnerPaintRatio(
+                thinner_data=[],
+                paint_data=[],
+                ratio_data=[]
+            )
+        
+        # Create pivot tables
+        thinner_pivot = df.pivot_table(
+            index=['factory_code', 'factory_name'],
+            columns='month',
+            values='sales_thinner_quantity',
+            fill_value=0
+        ).reset_index()
+        
+        paint_pivot = df.pivot_table(
+            index=['factory_code', 'factory_name'],
+            columns='month',
+            values='sales_paint_quantity',
+            fill_value=0
+        ).reset_index()
+        
+        ratio_pivot = df.pivot_table(
+            index=['factory_code', 'factory_name'],
+            columns='month',
+            values='ratio',
+            fill_value=0
+        ).reset_index()
+        
+        for pivot_df in [thinner_pivot, paint_pivot, ratio_pivot]:
+            pivot_df.columns = [str(col) for col in pivot_df.columns] #JSON key must be string
+
+        # Round ratio values
+        ratio_cols = [col for col in ratio_pivot.columns if col not in ['factory_code', 'factory_name']]
+        ratio_pivot[ratio_cols] = ratio_pivot[ratio_cols].round(2)
+        
+        # Convert to dict for JSON response
+        thinner_data = thinner_pivot.to_dict('records')
+        paint_data = paint_pivot.to_dict('records')
+        ratio_data = ratio_pivot.to_dict('records')
+
+        return PivotThinnerPaintRatio(
+            thinner_data=thinner_data,
+            paint_data=paint_data,
+            ratio_data=ratio_data
+        )
+
+    except Exception as e:
+        logger.error(f"Error retrieving thinner-paint-ratio: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve thinner-paint-ratio: {str(e)}"
         )
