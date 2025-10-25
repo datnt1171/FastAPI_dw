@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Optional, List, Generic, TypeVar, Any, Dict
 from datetime import datetime, date
 from decimal import Decimal
+from dateutil.relativedelta import relativedelta
 
 T = TypeVar('T')
 
@@ -39,8 +40,8 @@ class BaseRecord(BaseModel):
 
 
 class DateRangeParams(BaseModel):
-    date__gte: date
-    date__lte: date
+    date__gte: date = date.today().replace(day=1)  # First day of this month
+    date__lte: date = date.today()  # Today
     
     @field_validator('date__lte')
     def validate_date_range(cls, v, info):
@@ -50,12 +51,12 @@ class DateRangeParams(BaseModel):
 
 
 class DateRangeTargetParams(BaseModel):
-    date_target__gte: date
-    date_target__lte: date
+    date_target__gte: date = (date.today().replace(day=1) - relativedelta(months=1))  # First day of Today - 1 month
+    date_target__lte: date = (date.today() - relativedelta(months=1))  # Today - 1 month
 
     @field_validator('date_target__lte')
     def validate_target_date_range(cls, v, info):
-        if 'date_target__gle' in info.data and v < info.data['date_target__gle']:
+        if 'date_target__gte' in info.data and v < info.data['date_target__gte']:
             raise ValueError('Target end date must be after or equal to target start date')
         return v
 

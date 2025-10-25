@@ -199,8 +199,8 @@ async def get_factory_sales_range_diff(
                     SELECT fs.factory_code, SUM(fs.sales_quantity) AS whole_month_sales_quantity
                     FROM fact_sales fs
                     JOIN dim_date dd ON fs.sales_date = dd.date
-                    WHERE dd.year = EXTRACT(YEAR FROM CAST($1 AS DATE))
-                        AND dd.month = EXTRACT(MONTH FROM CAST($1 AS DATE))
+                    WHERE dd.year = EXTRACT(YEAR FROM CAST($3 AS DATE))
+                        AND dd.month = EXTRACT(MONTH FROM CAST($3 AS DATE))
                         AND fs.factory_code IN (SELECT factory_code FROM sales_diff)
                     GROUP BY fs.factory_code
                 ),
@@ -301,8 +301,8 @@ async def get_factory_order_range_diff(
                     SELECT fo.factory_code, SUM(fo.order_quantity) AS whole_month_order_quantity
                     FROM fact_order fo
                     JOIN dim_date dd ON fo.order_date = dd.date
-                    WHERE dd.year = EXTRACT(YEAR FROM CAST($1 AS DATE))
-                    AND dd.month = EXTRACT(MONTH FROM CAST($1 AS DATE))
+                    WHERE dd.year = EXTRACT(YEAR FROM CAST($3 AS DATE))
+                    AND dd.month = EXTRACT(MONTH FROM CAST($3 AS DATE))
                     AND fo.factory_code IN (SELECT factory_code FROM order_diff)
                     GROUP BY fo.factory_code
                 ),
@@ -581,8 +581,8 @@ async def get_scheduled_and_actual_sales(
 
 @router.get("/sales-overtime")
 async def get_sales_pivot(
-    years: str = Query(..., description="Comma-separated years (e.g., 2023,2024)"),
-    group_by: str = Query(..., description="Comma-separated group by fields (e.g., year,quarter)"),
+    year: str = Query(str(datetime.now().year)),
+    group_by: str = Query("month", description="Comma-separated group by fields (e.g., year,quarter)"),
     factory: Optional[str] = None,
     product: Optional[str] = None,
     permitted = Depends(has_permission())
@@ -592,7 +592,7 @@ async def get_sales_pivot(
     """
     try:
         # Parse comma-separated values
-        years_list = [int(y.strip()) for y in years.split(",")]
+        years_list = [int(y.strip()) for y in year.split(",")]
         group_by_list = [field.strip() for field in group_by.split(",")]
         
         # Validate group_by fields
@@ -671,36 +671,59 @@ async def get_sales_pivot(
     
     try:
 
-        query = """WITH base_data AS (
+        query = """WITH date_series AS (
+                    -- Generate all months from both date ranges
+                    SELECT DISTINCT dd.year, dd.month
+                    FROM dim_date dd
+                    WHERE dd.date BETWEEN $1 AND $2
+                       OR dd.date BETWEEN $3 AND $4
+                ),
+                base_data AS (
                     SELECT
                         d_sales.year,
                         d_sales.month,
                         SUM(fs.sales_quantity) AS sales_quantity,
-                        SUM(fo.order_quantity) AS order_quantity,
                         CASE
                             WHEN d_sales.month = d_order.month AND d_sales.year = d_order.year THEN 1
                             ELSE 0
                         END AS is_same_month
                     FROM fact_sales fs
-                    JOIN fact_order fo ON fs.order_code = fo.order_code
-                    JOIN dim_date d_sales ON fs.sales_date = d_sales.date
-                    JOIN dim_date d_order ON fo.order_date = d_order.date
+                        JOIN fact_order fo ON fs.order_code = fo.order_code
+                        JOIN dim_date d_sales ON fs.sales_date = d_sales.date
+                        JOIN dim_date d_order ON fo.order_date = d_order.date
                     WHERE d_sales.date BETWEEN $1 AND $2
-                    OR d_sales.date BETWEEN $3 AND $4
+                        OR d_sales.date BETWEEN $3 AND $4
                     GROUP BY d_sales.year, d_sales.month, is_same_month
-                )
+                ),
+                aggregated_data AS (
+                    SELECT
+                        year,
+                        month,
+                        SUM(CASE WHEN is_same_month = 1 THEN sales_quantity ELSE 0 END) AS same_month_sales,
+                        SUM(CASE WHEN is_same_month = 0 THEN sales_quantity ELSE 0 END) AS diff_month_sales,
+                        SUM(sales_quantity) AS total_sales
+                    FROM base_data
+                    GROUP BY year, month
+                ),
+                order_data AS (
+	                SELECT d_order.year, d_order.month, sum(order_quantity) AS total_order
+	                FROM fact_order fo
+	                	JOIN dim_date d_order ON fo.order_date = d_order.date
+					WHERE d_order.date BETWEEN $1 AND $2
+	                       OR d_order.date BETWEEN $3 AND $4
+	                GROUP BY d_order.year, d_order.month
+	            )
                 SELECT
-                    year,
-                    month,
-                    SUM(CASE WHEN is_same_month = 1 THEN sales_quantity ELSE 0 END) AS same_month_sales,
-                    SUM(CASE WHEN is_same_month = 0 THEN sales_quantity ELSE 0 END) AS diff_month_sales,
-                    SUM(sales_quantity) AS total_sales,
-                    SUM(CASE WHEN is_same_month = 1 THEN order_quantity ELSE 0 END) AS same_month_order,
-                    SUM(CASE WHEN is_same_month = 0 THEN order_quantity ELSE 0 END) AS diff_month_order,
-                    SUM(order_quantity) AS total_order
-                FROM base_data
-                GROUP BY year, month
-                ORDER BY year, month
+                    ds.year,
+                    ds.month,
+                    COALESCE(ad.same_month_sales, 0) AS same_month_sales,
+                    COALESCE(ad.diff_month_sales, 0) AS diff_month_sales,
+                    COALESCE(ad.total_sales, 0) AS total_sales,
+                    COALESCE(od.total_order, 0) AS total_order
+                FROM date_series ds
+                    LEFT JOIN aggregated_data ad ON ds.year = ad.year AND ds.month = ad.month
+                    LEFT JOIN order_data od ON ds.year = od.year AND ds.month = od.month
+                ORDER BY ds.year, ds.month
                 """
 
         result = await execute_query(
@@ -722,43 +745,74 @@ async def get_sales_pivot(
             detail=f"Failed to retrieve is-same-month: {str(e)}"
         )
 
-@router.get("/sales-order-pct-diff", response_model=List[SalesOrderPctDiff])
+@router.get("/sales-order-pct-diff", response_model=SalesOrderPctDiff)
 async def get_sales_pivot(
     date_range: DateRangeParams = Depends(),
     date_range_target: DateRangeTargetParams = Depends(),
     exclude_factory: str = Query('30673', description="Factory code to exclude"),
     permitted = Depends(has_permission())
-) -> List[SalesOrderPctDiff]:
+) -> SalesOrderPctDiff:
     try:
         
-        query = """WITH monthly_data AS (
-                    SELECT
-                        dd.year,
-                        dd.month,
-                        SUM(fs.sales_quantity) AS sales_quantity,
-                        SUM(CASE WHEN fs.factory_code = $5 THEN fs.sales_quantity ELSE 0 END) AS exclude_sales,
-                        SUM(fo.order_quantity) AS order_quantity,
-                        SUM(CASE WHEN fo.factory_code = $5 THEN fo.order_quantity ELSE 0 END) AS exclude_order
-                    FROM dim_date dd
-                        LEFT JOIN fact_sales fs ON fs.sales_date = dd.date
-                        LEFT JOIN fact_order fo ON fo.order_date = dd.date
-                    WHERE dd.date BETWEEN $1 AND $2
+        query = """WITH sales_diff AS (
+                        SELECT 
+                            dd.year,
+                            dd.month,
+                            SUM(fs.sales_quantity) AS sales_quantity,
+                            SUM(CASE WHEN fs.factory_code != $5 THEN fs.sales_quantity ELSE 0 END) AS remain_sales_quantity
+                        FROM fact_sales fs JOIN dim_date dd 
+                        ON fs.sales_date = dd.date
+                        WHERE dd.date BETWEEN $1 AND $2
                         OR dd.date BETWEEN $3 AND $4
-                    GROUP BY dd.year, dd.month
-                )
-                SELECT
-                    year,
-                    month,
-                    sales_quantity,
-                    (LAG(sales_quantity, 1, sales_quantity) OVER (ORDER BY year, month) / sales_quantity) - 1 AS sales_pct_diff,
-                    sales_quantity - exclude_sales AS remain_sales_quantity,
-                    (LAG(sales_quantity - exclude_sales, 1, sales_quantity - exclude_sales) OVER (ORDER BY year, month) / (sales_quantity - exclude_sales)) - 1 AS remain_sales_pct_diff,
-                    order_quantity,
-                    (LAG(order_quantity, 1, order_quantity) OVER (ORDER BY year, month) / order_quantity) - 1 AS order_pct_diff,
-                    order_quantity - exclude_order AS remain_order_quantity,
-                    (LAG(order_quantity - exclude_order, 1, order_quantity - exclude_order) OVER (ORDER BY year, month) / (order_quantity - exclude_order)) - 1 AS remain_order_pct_diff
-                FROM monthly_data
-                ORDER BY year, month
+                        GROUP BY dd.year, dd.month
+                    ),
+                    sales_pct_diff AS (
+                        SELECT 
+                            year, 
+                            month,
+                            sd.sales_quantity,
+                            sd.remain_sales_quantity,
+                            (sd.sales_quantity / LAG(sd.sales_quantity, 1, sd.sales_quantity) OVER (ORDER BY year, month)) - 1 AS sales_pct_diff,
+                            (sd.remain_sales_quantity  / LAG(sd.remain_sales_quantity, 1, sd.remain_sales_quantity) OVER (ORDER BY year, month)) -1 AS remain_sales_pct_diff
+                        FROM sales_diff sd
+                    ),
+                    order_diff AS (
+                        SELECT 
+                            dd.year,
+                            dd.month,
+                            SUM(fo.order_quantity) AS order_quantity,
+                            SUM(CASE WHEN fo.factory_code != $5 THEN fo.order_quantity ELSE 0 END) AS remain_order_quantity
+                        FROM fact_order fo JOIN dim_date dd 
+                        ON fo.order_date = dd.date
+                        WHERE dd.date BETWEEN $1 AND $2
+                        OR dd.date BETWEEN $3 AND $4
+                        GROUP BY dd.year, dd.month
+                    ),
+                    order_pct_diff AS (
+                        SELECT 
+                            year, 
+                            month,
+                            od.order_quantity,
+                            od.remain_order_quantity,
+                            (od.order_quantity / LAG(od.order_quantity, 1, od.order_quantity) OVER (ORDER BY year, month)) - 1 AS order_pct_diff,
+                            (od.remain_order_quantity / LAG(od.remain_order_quantity, 1, od.remain_order_quantity) OVER (ORDER BY year, month)) -1 AS remain_order_pct_diff
+                        FROM order_diff od
+                    )
+                    SELECT
+                        spd.year,
+                        spd.month,
+                        sales_quantity,
+                        sales_pct_diff,
+                        remain_sales_quantity,
+                        remain_sales_pct_diff,
+                        order_quantity,
+                        order_pct_diff,
+                        remain_order_quantity,
+                        remain_order_pct_diff
+                    FROM sales_pct_diff spd
+                        JOIN order_pct_diff opd ON spd.year = opd.year AND spd.month = opd.month
+                    ORDER BY spd.year DESC, spd.month DESC
+                    LIMIT 1
                 """
 
         result = await execute_query(
@@ -770,7 +824,8 @@ async def get_sales_pivot(
                 date_range_target.date_target__lte,
                 exclude_factory
             ),
-            fetch_all=True
+            fetch_all=False,
+            fetch_one=True
         )
         return result
     
@@ -785,18 +840,22 @@ async def get_sales_pivot(
 @router.get("/thinner-paint-ratio", response_model=PivotThinnerPaintRatio)
 async def get_sales_pivot(
     year: int = Query(datetime.now().year, ge=2020, le=datetime.now().year, description="Year"),
-    thinners: List[ProductType] = Query(
-        default=["原料溶劑 NL DUNG MOI", "成品溶劑DUNG MOI TP"],
-        description="Thinner product types"
+    thinner: str = Query(
+        default="原料溶劑 NL DUNG MOI,成品溶劑DUNG MOI TP",
+        description="Comma-separated thinner product types"
     ),
-    paint: List[ProductType] = Query(
-        default=["烤調色PM HAP", "木調色PM GO", "底漆 LOT", "面漆 BONG"],
-        description="Paint product types"
+    paint: str = Query(
+        default="烤調色PM HAP,木調色PM GO,底漆 LOT,面漆 BONG",
+        description="Comma-separated paint product types"
     )
 ) -> PivotThinnerPaintRatio:
     try:
-        thinner_placeholders = ", ".join([f"${i+2}" for i in range(len(thinners))])
-        paint_placeholders = ", ".join([f"${i+2+len(thinners)}" for i in range(len(paint))])
+        # Split comma-separated strings into lists
+        thinner_list = [t.strip() for t in thinner.split(',')]
+        paint_list = [p.strip() for p in paint.split(',')]
+        
+        thinner_placeholders = ", ".join([f"${i+2}" for i in range(len(thinner_list))])
+        paint_placeholders = ", ".join([f"${i+2+len(thinner_list)}" for i in range(len(paint_list))])
         
         query = f"""WITH thinner_paint_sales AS (
                     SELECT
@@ -827,7 +886,7 @@ async def get_sales_pivot(
                 ORDER BY factory_code, month
             """
         
-        params = [year] + list(thinners) + list(paint)
+        params = [year] + thinner_list + paint_list
         
         result = await execute_query(
             query=query,

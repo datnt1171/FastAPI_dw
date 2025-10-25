@@ -73,8 +73,6 @@ class IsSameMonth(BaseRecord):
     same_month_sales: float = Field(...)
     diff_month_sales: float = Field(...)
     total_sales: float = Field(...)
-    same_month_order: float = Field(...)
-    diff_month_order: float = Field(...)
     total_order: float = Field(...)
 
 
