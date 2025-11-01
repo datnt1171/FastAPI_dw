@@ -872,19 +872,27 @@ async def get_sales_pivot(
                     JOIN dim_product dp ON fs.product_code = dp.product_code
                     WHERE dd.year = $1
                     GROUP BY df.factory_code, df.factory_name, dd.month
-                )
-                SELECT 
-                    factory_code,
-                    factory_name,
-                    month,
-                    sales_thinner_quantity,
-                    sales_paint_quantity,
-                    COALESCE(sales_thinner_quantity / NULLIF(sales_paint_quantity, 0), 0) AS ratio
-                FROM thinner_paint_sales
-                WHERE sales_thinner_quantity != 0
-                OR sales_paint_quantity != 0
-                ORDER BY factory_code, month
-            """
+                    )
+                    SELECT 
+                        factory_code,
+                        factory_name,
+                        month,
+                        sales_thinner_quantity,
+                        sales_paint_quantity,
+                        CASE 
+                            WHEN sales_thinner_quantity = 0 AND sales_paint_quantity = 0 THEN '0'
+                            WHEN sales_thinner_quantity = 0 THEN CONCAT('0:', sales_paint_quantity)
+                            WHEN sales_paint_quantity = 0 THEN CONCAT(sales_thinner_quantity, ':0')
+                            ELSE CONCAT(
+                                ROUND((sales_thinner_quantity / NULLIF(sales_paint_quantity, 0))::NUMERIC, 1)::TEXT, 
+                                ':1'
+                            )
+                        END AS ratio
+                    FROM thinner_paint_sales
+                    WHERE sales_thinner_quantity != 0
+                    OR sales_paint_quantity != 0
+                    ORDER BY factory_code, month
+                """
         
         params = [year] + thinner_list + paint_list
         
@@ -919,19 +927,15 @@ async def get_sales_pivot(
             fill_value=0
         ).reset_index()
         
-        ratio_pivot = df.pivot_table(
+        ratio_pivot = df.pivot(
             index=['factory_code', 'factory_name'],
             columns='month',
-            values='ratio',
-            fill_value=0
-        ).reset_index()
+            values='ratio'
+        ).fillna('0').reset_index()
         
         for pivot_df in [thinner_pivot, paint_pivot, ratio_pivot]:
             pivot_df.columns = [str(col) for col in pivot_df.columns] #JSON key must be string
 
-        # Round ratio values
-        ratio_cols = [col for col in ratio_pivot.columns if col not in ['factory_code', 'factory_name']]
-        ratio_pivot[ratio_cols] = ratio_pivot[ratio_cols].round(2)
         
         # Convert to dict for JSON response
         thinner_data = thinner_pivot.to_dict('records')
