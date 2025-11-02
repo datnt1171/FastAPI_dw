@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.core.auth import has_permission
 from app.core.database import db_manager
 from app.api.routes.crm import factories, retailers, blueprints
-from app.api.routes import warehouse
+from app.api.routes import warehouse, excel_upload
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +45,7 @@ app.include_router(factories.router)
 app.include_router(retailers.router)
 app.include_router(blueprints.router)
 app.include_router(warehouse.router)
+app.include_router(excel_upload.router)
 # app.include_router(color_mixing.router, prefix="/api/color-mixing", tags=["color-mixing"])
 
 @app.get("/")
