@@ -307,44 +307,27 @@ async def update_factory_list(conn: asyncpg.Connection) -> int:
         Number of factories upserted
     """
     try:
-        # Get distinct factories from staging
-        query = """
-            SELECT DISTINCT 
-                REPLACE(factory_code, '.0', '') as factory_code,
-                factory_name
-            FROM copr13
-            WHERE factory_code IS NOT NULL 
-                AND factory_name IS NOT NULL
-            ORDER BY factory_code
-        """
-        
-        rows = await conn.fetch(query)
-        
-        if not rows:
-            logger.info("No factories to update")
-            return 0
-        
-        # Convert to DataFrame for deduplication
-        df_factory = pd.DataFrame([dict(row) for row in rows])
-        df_factory.drop_duplicates(subset='factory_code', inplace=True)
-        
-        # Upsert into dim_factory
         upsert_query = """
-            INSERT INTO dim_factory (factory_code, factory_name)
-            VALUES ($1, $2)
-            ON CONFLICT (factory_code)
-            DO UPDATE SET
-                factory_name = EXCLUDED.factory_name
+            INSERT INTO dim_factory (factory_code, factory_name, is_active, has_onsite, salesman)
+            SELECT DISTINCT ON (factory_code)
+                REPLACE(factory_code, '.0', '') as factory_code,
+                factory_name,
+                TRUE as is_active,
+                FALSE as has_onsite,
+                salesman
+            FROM copr13
+            WHERE factory_code IS NOT NULL
+            ORDER BY factory_code, order_date DESC NULLS LAST
+            ON CONFLICT (factory_code) DO NOTHING
         """
         
-        upserted = 0
-        async with conn.transaction():
-            for _, row in df_factory.iterrows():
-                await conn.execute(upsert_query, row['factory_code'], row['factory_name'])
-                upserted += 1
+        result = await conn.execute(upsert_query)
         
-        logger.info(f"Dim factory updated: {upserted} factories")
-        return upserted
+        # Extract number of rows affected from result
+        rows_affected = int(result.split()[-1]) if result else 0
+        
+        logger.info(f"Dim factory updated: {rows_affected} factories")
+        return rows_affected
         
     except Exception as e:
         logger.error(f"Error updating factory list: {e}", exc_info=True)
@@ -362,48 +345,24 @@ async def update_product_list(conn: asyncpg.Connection) -> int:
         Number of products upserted
     """
     try:
-        # Get distinct products from staging
-        query = """
-            SELECT DISTINCT 
+        upsert_query = """
+            INSERT INTO dim_product (product_code, product_name)
+            SELECT DISTINCT ON (product_code)
                 product_code,
                 product_name
             FROM copr13
-            WHERE product_code IS NOT NULL 
-                AND product_name IS NOT NULL
-            ORDER BY product_code
+            WHERE product_code IS NOT NULL
+            ORDER BY product_code, product_name
+            ON CONFLICT (product_code) DO NOTHING
         """
         
-        rows = await conn.fetch(query)
+        result = await conn.execute(upsert_query)
         
-        if not rows:
-            logger.info("No products to update")
-            return 0
+        # Extract number of rows affected from result
+        rows_affected = int(result.split()[-1]) if result else 0
         
-        # Convert to DataFrame for deduplication
-        df_product = pd.DataFrame([dict(row) for row in rows])
-        df_product.drop_duplicates(subset='product_code', inplace=True)
-        
-        # Upsert into dim_product
-        upsert_query = """
-            INSERT INTO dim_product (product_code, product_name)
-            VALUES ($1, $2)
-            ON CONFLICT (product_code)
-            DO UPDATE SET
-                product_name = EXCLUDED.product_name
-        """
-        
-        upserted = 0
-        async with conn.transaction():
-            for _, row in df_product.iterrows():
-                await conn.execute(
-                    upsert_query, 
-                    row['product_code'], 
-                    row['product_name']
-                )
-                upserted += 1
-        
-        logger.info(f"Dim product updated: {upserted} products")
-        return upserted
+        logger.info(f"Dim product updated: {rows_affected} products")
+        return rows_affected
         
     except Exception as e:
         logger.error(f"Error updating product list: {e}", exc_info=True)
