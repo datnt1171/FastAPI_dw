@@ -17,6 +17,33 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/warehouse", tags=["warehouse"])
 
+
+@router.get("/max-sales-date", response_model=str)
+async def get_max_sales_date(
+    permitted = Depends(has_permission())
+) -> str:
+    """Get the maximum sales date from fact_sales"""
+    try:
+        query = "SELECT MAX(sales_date) as max_sales_date FROM fact_sales"
+       
+        result = await execute_query(
+            query=query,
+            fetch_all=False,
+            fetch_one=True
+        )
+       
+        # Format date as string
+        max_sales_date = result['max_sales_date']
+        return max_sales_date.strftime('%Y-%m-%d')
+
+
+    except Exception as e:
+        logger.error(f"Error retrieving max sales date: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve max sales date: {str(e)}"
+        )
+
 @router.get("/overall", response_model=List[Overall])
 async def get_overall(
     day__gte: int = Query(1, ge=1, le=31, description="Start day"),
