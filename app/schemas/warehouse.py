@@ -2,7 +2,7 @@ from pydantic import Field
 from .common import BaseRecord
 from pydantic import Field
 from typing import Optional, Literal, List, Dict, Any, Union
-
+from datetime import date, datetime
 
 class Overall(BaseRecord):
     month: int = Field(...)
@@ -118,3 +118,58 @@ class PivotThinnerPaintRatio(BaseRecord):
     thinner_data: List[Dict[str, Any]]
     paint_data: List[Dict[str, Any]]
     ratio_data: List[Dict[str, Any]]
+
+
+class FactOrder(BaseRecord):
+    order_date: Optional[date] = Field(default=None)
+    order_code: Optional[str] = Field(default=None)
+    ct_date: Optional[date] = Field(default=None)
+    factory_code: Optional[str] = Field(default=None)
+    factory_order_code: Optional[str] = Field(default=None)
+    tax_type: Optional[str] = Field(default=None)
+    department: Optional[str] = Field(default=None)
+    salesman: Optional[str] = Field(default=None)
+    deposit_rate: Optional[float] = Field(default=0.0)
+    payment_registration_code: Optional[str] = Field(default=None)
+    payment_registration_name: Optional[str] = Field(default=None)
+    delivery_address: Optional[str] = Field(default=None)
+    product_code: Optional[str] = Field(default=None)
+    product_name: Optional[str] = Field(default=None)
+    qc: Optional[str] = Field(default=None)
+    warehouse_type: Optional[str] = Field(default=None)
+    order_quantity: Optional[float] = Field(default=0.0)
+    delivered_quantity: Optional[float] = Field(default=0.0)
+    package_order_quantity: Optional[float] = Field(default=0.0)
+    delivered_package_order_quantity: Optional[float] = Field(default=0.0)
+    unit: Optional[str] = Field(default=None)
+    package_unit: Optional[str] = Field(default=None)
+    estimated_delivery_date: Optional[date] = Field(default=None)
+    original_estimated_delivery_date: Optional[date] = Field(default=None)
+    pre_ct: Optional[str] = Field(default=None)
+    finish_code: Optional[str] = Field(default=None)
+    import_timestamp: Optional[datetime] = Field(default=None)
+    import_wh_timestamp: Optional[datetime] = Field(default=None)
+    factory_name: Optional[str] = Field(default=None)
+
+
+class FactSales(BaseRecord):
+    product_code: Optional[str] = Field(default=None)
+    product_name: Optional[str] = Field(default=None)
+    qc: Optional[str] = Field(default=None)
+    factory_code: Optional[str] = Field(default=None)
+    sales_date: Optional[date] = Field(default=None)
+    sales_code: Optional[str] = Field(default=None)
+    order_code: Optional[str] = Field(default=None)
+    sales_quantity: Optional[float] = Field(default=0.0)
+    unit: Optional[str] = Field(default=None)
+    package_sales_quantity: Optional[float] = Field(default=0.0)
+    package_unit: Optional[str] = Field(default=None)
+    department: Optional[str] = Field(default=None)
+    salesman: Optional[str] = Field(default=None)
+    warehouse_code: Optional[str] = Field(default=None)
+    warehouse_type: Optional[str] = Field(default=None)
+    import_code: Optional[str] = Field(default=None)
+    factory_order_code: Optional[str] = Field(default=None)
+    import_timestamp: Optional[datetime] = Field(default=None)
+    import_wh_timestamp: Optional[datetime] = Field(default=None)
+    factory_name: Optional[str] = Field(default=None)

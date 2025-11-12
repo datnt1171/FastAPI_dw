@@ -9,6 +9,7 @@ from app.schemas.warehouse import (Overall,
                                    ScheduledAndActualSales,
                                    IsSameMonth, SalesOrderPctDiff,
                                    ThinnerPaintRatio, ProductType, PivotThinnerPaintRatio,
+                                   FactOrder, FactSales
                                    )
 from app.schemas.common import DateRangeParams, DateRangeTargetParams, TIME_GROUP_BY_MAPPING
 from datetime import datetime
@@ -980,4 +981,127 @@ async def get_sales_pivot(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retrieve thinner-paint-ratio: {str(e)}"
+        )
+    
+
+@router.get("/fact-order", response_model=List[FactOrder])
+async def get_fact_order(
+    date_range: DateRangeParams = Depends(),
+    permitted = Depends(has_permission())
+) -> List[FactOrder]:
+    """
+    All column from fact order
+    """
+    try:
+        query = """SELECT 
+                        fo.order_date,
+                        fo.order_code,
+                        fo.ct_date,
+                        fo.factory_code,
+                        fo.factory_order_code,
+                        fo.tax_type,
+                        fo.department,
+                        fo.salesman,
+                        fo.deposit_rate,
+                        fo.payment_registration_code,
+                        fo.payment_registration_name,
+                        fo.delivery_address,
+                        fo.product_code,
+                        fo.product_name,
+                        fo.qc,
+                        fo.warehouse_type,
+                        fo.order_quantity,
+                        fo.delivered_quantity,
+                        fo.package_order_quantity,
+                        fo.delivered_package_order_quantity,
+                        fo.unit,
+                        fo.package_unit,
+                        fo.estimated_delivery_date,
+                        fo.original_estimated_delivery_date,
+                        fo.pre_ct,
+                        fo.finish_code,
+                        fo.import_timestamp,
+                        fo.import_wh_timestamp,
+                        df.factory_name
+                    FROM fact_order fo
+                    JOIN dim_factory df 
+                        ON fo.factory_code = df.factory_code
+                    WHERE fo.order_date BETWEEN $1 AND $2
+                """
+        
+        fact_order_result = await execute_query(
+            query=query,
+            params=(date_range.date__gte,
+                    date_range.date__lte),
+            fetch_all=True
+        )
+
+        if not fact_order_result:
+            logger.warning("No data found for the specified criteria")
+            return []
+
+        return fact_order_result
+
+    except Exception as e:
+        logger.error(f"Error retrieving fact_order: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve fact_order: {str(e)}"
+        )
+
+
+@router.get("/fact-sales", response_model=List[FactSales])
+async def get_fact_sales(
+    date_range: DateRangeParams = Depends(),
+    permitted = Depends(has_permission())
+) -> List[FactSales]:
+    """
+    All column from fact sales
+    """
+    try:
+        query = """SELECT
+                        fs.product_code,
+                        fs.product_name,
+                        fs.qc,
+                        fs.factory_code,
+                        fs.sales_date,
+                        fs.sales_code,
+                        fs.order_code,
+                        fs.sales_quantity,
+                        fs.unit,
+                        fs.package_sales_quantity,
+                        fs.package_unit,
+                        fs.department,
+                        fs.salesman,
+                        fs.warehouse_code,
+                        fs.warehouse_type,
+                        fs.import_code,
+                        fs.factory_order_code,
+                        fs.import_timestamp,
+                        fs.import_wh_timestamp,
+                        df.factory_name
+                    FROM fact_sales fs
+                    JOIN dim_factory df
+                        ON fs.factory_code = df.factory_code
+                    WHERE fs.sales_date BETWEEN $1 AND $2
+                """
+        
+        fact_sales_result = await execute_query(
+            query=query,
+            params=(date_range.date__gte,
+                    date_range.date__lte),
+            fetch_all=True
+        )
+
+        if not fact_sales_result:
+            logger.warning("No data found for the specified criteria")
+            return []
+
+        return fact_sales_result
+
+    except Exception as e:
+        logger.error(f"Error retrieving fact_sales: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve fact_sales: {str(e)}"
         )
