@@ -961,9 +961,29 @@ async def get_sales_pivot(
             values='ratio'
         ).fillna('0').reset_index()
         
+        # Get the latest month column (highest month number)
+        month_columns = [col for col in thinner_pivot.columns if col not in ['factory_code', 'factory_name']]
+        if month_columns:
+            latest_month = max(month_columns, key=int)
+            
+            # Calculate total sales for latest month for sorting
+            sort_column = 'total_latest_month'
+            thinner_pivot[sort_column] = thinner_pivot[latest_month] + paint_pivot[latest_month]
+            
+            # Sort all pivots by the total of latest month (descending)
+            thinner_pivot = thinner_pivot.sort_values(sort_column, ascending=False).drop(columns=[sort_column])
+            
+            # Apply same sorting to paint and ratio pivots
+            paint_pivot = paint_pivot.loc[thinner_pivot.index]
+            ratio_pivot = ratio_pivot.loc[thinner_pivot.index]
+            
+            # Reset index after sorting
+            thinner_pivot = thinner_pivot.reset_index(drop=True)
+            paint_pivot = paint_pivot.reset_index(drop=True)
+            ratio_pivot = ratio_pivot.reset_index(drop=True)
+        
         for pivot_df in [thinner_pivot, paint_pivot, ratio_pivot]:
             pivot_df.columns = [str(col) for col in pivot_df.columns] #JSON key must be string
-
         
         # Convert to dict for JSON response
         thinner_data = thinner_pivot.to_dict('records')
