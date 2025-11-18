@@ -346,14 +346,13 @@ async def update_product_list(conn: asyncpg.Connection) -> int:
     """
     try:
         upsert_query = """
-            INSERT INTO dim_product (product_code, product_name)
-            SELECT DISTINCT ON (product_code)
-                product_code,
+            INSERT INTO dim_product (product_name)
+            SELECT DISTINCT ON (product_name)
                 product_name
             FROM copr13
-            WHERE product_code IS NOT NULL
-            ORDER BY product_code, product_name
-            ON CONFLICT (product_code) DO NOTHING
+            WHERE product_name IS NOT NULL
+            ORDER BY product_name, product_name
+            ON CONFLICT (product_name) DO NOTHING
         """
         
         result = await conn.execute(upsert_query)
