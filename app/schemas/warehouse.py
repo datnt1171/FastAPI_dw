@@ -1,8 +1,9 @@
 from pydantic import Field
 from .common import BaseRecord
 from pydantic import Field
-from typing import Optional, Literal, List, Dict, Any, Union
+from typing import Optional, Literal, List, Dict, Any
 from datetime import date, datetime
+from decimal import Decimal
 
 class Overall(BaseRecord):
     month: int = Field(...)
@@ -173,3 +174,19 @@ class FactSales(BaseRecord):
     import_timestamp: Optional[datetime] = Field(default=None)
     import_wh_timestamp: Optional[datetime] = Field(default=None)
     factory_name: Optional[str] = Field(default=None)
+
+
+class SalesBOM(BaseRecord):
+    product_name: str = Field(...)
+    sales_quantity: Decimal = Field(...)
+    material_name: str = Field(...)
+    ratio: Decimal = Field(...)
+    material_quantity: Decimal = Field(...)
+
+
+class OrderBOM(BaseRecord):
+    product_name: str = Field(...)
+    order_quantity: Decimal = Field(...)
+    material_name: str = Field(...)
+    ratio: Decimal = Field(...)
+    material_quantity: Decimal = Field(...)

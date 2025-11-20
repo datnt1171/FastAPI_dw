@@ -9,7 +9,8 @@ from app.schemas.warehouse import (Overall,
                                    ScheduledAndActualSales,
                                    IsSameMonth, SalesOrderPctDiff,
                                    ThinnerPaintRatio, ProductType, PivotThinnerPaintRatio,
-                                   FactOrder, FactSales
+                                   FactOrder, FactSales,
+                                   SalesBOM, OrderBOM,
                                    )
 from app.schemas.common import DateRangeParams, DateRangeTargetParams, TIME_GROUP_BY_MAPPING
 from datetime import datetime
@@ -1124,4 +1125,124 @@ async def get_fact_sales(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retrieve fact_sales: {str(e)}"
+        )
+
+
+@router.get("/sales-bom", response_model=List[SalesBOM])
+async def get_sales_bom(
+    date_range: DateRangeParams = Depends(),
+    factory: str | None = None,
+    permitted = Depends(has_permission())
+) -> List[SalesBOM]:
+    """
+    Get sales quantity in a time period and calculate its BOM
+    """
+    try:
+
+        factory_array = factory.split(',') if factory else None
+
+        query = """WITH sales_data AS (
+                        SELECT product_name, sum(sales_quantity) AS sales_quantity
+                        FROM fact_sales fs
+                        WHERE sales_date BETWEEN $1 AND $2
+                            AND ($3::text[] IS NULL OR fs.factory_code = ANY($3))
+                        GROUP BY product_name
+                    ),
+                    formular_data as (
+                        SELECT bpm.material_name, bpm.product_name, bpm.ratio
+                        FROM bridge_product_material bpm 
+                        WHERE is_current = TRUE
+                    )
+                    SELECT 
+                        sd.product_name, 
+                        sd.sales_quantity, 
+                        fd.material_name, 
+                        fd.ratio,
+                        (sd.sales_quantity * fd.ratio) AS material_quantity
+                    FROM sales_data sd
+                        JOIN formular_data fd ON sd.product_name = fd.product_name
+                    ORDER BY sd.sales_quantity DESC
+                """
+        
+        sales_bom_result = await execute_query(
+            query=query,
+            params=(
+                date_range.date__gte,
+                date_range.date__lte,
+                factory_array,
+            ),
+            fetch_all=True
+        )
+
+        if not sales_bom_result:
+            logger.warning("No data found for the specified criteria")
+            return []
+
+        return sales_bom_result
+
+    except Exception as e:
+        logger.error(f"Error retrieving sales_bom_result: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve sales_bom_result: {str(e)}"
+        )
+    
+
+@router.get("/order-bom", response_model=List[OrderBOM])
+async def get_order_bom(
+    date_range: DateRangeParams = Depends(),
+    factory: str | None = None,
+    permitted = Depends(has_permission())
+) -> List[OrderBOM]:
+    """
+    Get order quantity in a time period and calculate its BOM
+    """
+    try:
+
+        factory_array = factory.split(',') if factory else None
+
+        query = """WITH order_data AS (
+                        SELECT product_name, sum(order_quantity) AS order_quantity
+                        FROM fact_order fo
+                        WHERE order_date BETWEEN $1 AND $2
+                            AND ($3::text[] IS NULL OR fo.factory_code = ANY($3))
+                        GROUP BY product_name
+                    ),
+                    formular_data as (
+                        SELECT bpm.material_name, bpm.product_name, bpm.ratio
+                        FROM bridge_product_material bpm 
+                        WHERE is_current = TRUE
+                    )
+                    SELECT 
+                        od.product_name, 
+                        od.order_quantity, 
+                        fd.material_name, 
+                        fd.ratio,
+                        (od.order_quantity * fd.ratio) AS material_quantity
+                    FROM order_data od
+                        JOIN formular_data fd ON od.product_name = fd.product_name
+                    ORDER BY od.order_quantity DESC
+                """
+        
+        order_bom_result = await execute_query(
+            query=query,
+            params=(
+                date_range.date__gte,
+                date_range.date__lte,
+                factory_array,
+            ),
+            fetch_all=True
+        )
+
+        if not order_bom_result:
+            logger.warning("No data found for the specified criteria")
+            return []
+
+        return order_bom_result
+
+    except Exception as e:
+        logger.error(f"Error retrieving order_bom_result: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve order_bom_result: {str(e)}"
         )
