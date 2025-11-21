@@ -1132,37 +1132,63 @@ async def get_fact_sales(
 async def get_sales_bom(
     date_range: DateRangeParams = Depends(),
     factory: str | None = None,
+    group_by: str | None = None,
     permitted = Depends(has_permission())
 ) -> List[SalesBOM]:
     """
     Get sales quantity in a time period and calculate its BOM
     """
     try:
-
         factory_array = factory.split(',') if factory else None
 
-        query = """WITH sales_data AS (
-                        SELECT product_name, sum(sales_quantity) AS sales_quantity
-                        FROM fact_sales fs
-                        WHERE sales_date BETWEEN $1 AND $2
-                            AND ($3::text[] IS NULL OR fs.factory_code = ANY($3))
-                        GROUP BY product_name
-                    ),
-                    formular_data as (
-                        SELECT bpm.material_name, bpm.product_name, bpm.ratio
-                        FROM bridge_product_material bpm 
-                        WHERE is_current = TRUE
-                    )
-                    SELECT 
-                        sd.product_name, 
-                        sd.sales_quantity, 
-                        fd.material_name, 
-                        fd.ratio,
-                        (sd.sales_quantity * fd.ratio) AS material_quantity
-                    FROM sales_data sd
-                        JOIN formular_data fd ON sd.product_name = fd.product_name
-                    ORDER BY sd.sales_quantity DESC
-                """
+        # Define allowed columns to prevent SQL injection
+        allowed_columns = {"factory_code", "factory_name", "product_name", "material_name"}
+        
+        # Build group_by_columns: user selections + material_name (always included)
+        group_by_columns = []
+        if group_by:
+            user_columns = [col.strip() for col in group_by.split(',')]
+            # Validate user columns
+            if not all(col in allowed_columns for col in user_columns):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid group_by columns. Allowed: {', '.join(allowed_columns)}"
+                )
+            # Filter out material_name from user input (we'll add it at the end)
+            group_by_columns = [col for col in user_columns if col != "material_name"]
+        
+        # Always include material_name at the end
+        group_by_columns.append("material_name")
+
+        group_by_clause = ", ".join(group_by_columns)
+        select_columns = group_by_clause
+        
+        # Add sales_quantity to SELECT if product_name is in group_by
+        if "product_name" in group_by_columns:
+            select_columns += ", ROUND(SUM(sales_quantity)::decimal,2) AS sales_quantity, ROUND(MAX(ratio),4) as ratio" # use MAX(ratio) to pypass group by
+
+        query = f"""
+            WITH bom_data AS (
+                SELECT
+                    df.factory_code,
+                    df.factory_name,
+                    fs.product_name,
+                    fs.sales_quantity,
+                    bpm.material_name,
+                    bpm.ratio,
+                    (fs.sales_quantity * bpm.ratio) AS material_quantity
+                FROM fact_sales fs
+                    JOIN dim_factory df ON df.factory_code = fs.factory_code
+                    JOIN bridge_product_material bpm ON fs.product_name = bpm.product_name
+                WHERE fs.sales_date BETWEEN $1 AND $2
+                    AND ($3::text[] IS NULL OR fs.factory_code = ANY($3))
+                    AND bpm.is_current = TRUE
+            )
+            SELECT {select_columns}, ROUND(SUM(material_quantity)::decimal,2) AS material_quantity
+            FROM bom_data
+            GROUP BY {group_by_clause}
+            ORDER BY {group_by_clause}
+        """
         
         sales_bom_result = await execute_query(
             query=query,
@@ -1180,6 +1206,8 @@ async def get_sales_bom(
 
         return sales_bom_result
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error retrieving sales_bom_result: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -1192,37 +1220,63 @@ async def get_sales_bom(
 async def get_order_bom(
     date_range: DateRangeParams = Depends(),
     factory: str | None = None,
+    group_by: str | None = None,
     permitted = Depends(has_permission())
 ) -> List[OrderBOM]:
     """
     Get order quantity in a time period and calculate its BOM
     """
     try:
-
         factory_array = factory.split(',') if factory else None
 
-        query = """WITH order_data AS (
-                        SELECT product_name, sum(order_quantity) AS order_quantity
-                        FROM fact_order fo
-                        WHERE order_date BETWEEN $1 AND $2
-                            AND ($3::text[] IS NULL OR fo.factory_code = ANY($3))
-                        GROUP BY product_name
-                    ),
-                    formular_data as (
-                        SELECT bpm.material_name, bpm.product_name, bpm.ratio
-                        FROM bridge_product_material bpm 
-                        WHERE is_current = TRUE
-                    )
-                    SELECT 
-                        od.product_name, 
-                        od.order_quantity, 
-                        fd.material_name, 
-                        fd.ratio,
-                        (od.order_quantity * fd.ratio) AS material_quantity
-                    FROM order_data od
-                        JOIN formular_data fd ON od.product_name = fd.product_name
-                    ORDER BY od.order_quantity DESC
-                """
+        # Define allowed columns to prevent SQL injection
+        allowed_columns = {"factory_code", "factory_name", "product_name", "material_name"}
+        
+        # Build group_by_columns: user selections + material_name (always included)
+        group_by_columns = []
+        if group_by:
+            user_columns = [col.strip() for col in group_by.split(',')]
+            # Validate user columns
+            if not all(col in allowed_columns for col in user_columns):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid group_by columns. Allowed: {', '.join(allowed_columns)}"
+                )
+            # Filter out material_name from user input (we'll add it at the end)
+            group_by_columns = [col for col in user_columns if col != "material_name"]
+        
+        # Always include material_name at the end
+        group_by_columns.append("material_name")
+
+        group_by_clause = ", ".join(group_by_columns)
+        select_columns = group_by_clause
+        
+        # Add order_quantity to SELECT if product_name is in group_by
+        if "product_name" in group_by_columns:
+            select_columns += ", ROUND(SUM(order_quantity)::decimal,2) AS order_quantity, ROUND(MAX(ratio),4) as ratio" # use MAX(ratio) to pypass group by
+
+        query = f"""
+            WITH bom_data AS (
+                SELECT
+                    df.factory_code,
+                    df.factory_name,
+                    fo.product_name,
+                    fo.order_quantity,
+                    bpm.material_name,
+                    bpm.ratio,
+                    (fo.order_quantity * bpm.ratio) AS material_quantity
+                FROM fact_order fo
+                    JOIN dim_factory df ON df.factory_code = fo.factory_code
+                    JOIN bridge_product_material bpm ON fo.product_name = bpm.product_name
+                WHERE fo.order_date BETWEEN $1 AND $2
+                    AND ($3::text[] IS NULL OR fo.factory_code = ANY($3))
+                    AND bpm.is_current = TRUE
+            )
+            SELECT {select_columns}, ROUND(SUM(material_quantity)::decimal,2) AS material_quantity
+            FROM bom_data
+            GROUP BY {group_by_clause}
+            ORDER BY {group_by_clause}
+        """
         
         order_bom_result = await execute_query(
             query=query,
@@ -1240,6 +1294,8 @@ async def get_order_bom(
 
         return order_bom_result
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error retrieving order_bom_result: {str(e)}", exc_info=True)
         raise HTTPException(

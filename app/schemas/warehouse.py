@@ -177,16 +177,20 @@ class FactSales(BaseRecord):
 
 
 class SalesBOM(BaseRecord):
-    product_name: str = Field(...)
-    sales_quantity: Decimal = Field(...)
-    material_name: str = Field(...)
-    ratio: Decimal = Field(...)
-    material_quantity: Decimal = Field(...)
+    factory_code: str | None = None
+    factory_name: str | None = None
+    product_name: str | None = None
+    sales_quantity: float | None = None
+    material_name: str | None = None
+    ratio: float | None = None
+    material_quantity: float
 
 
 class OrderBOM(BaseRecord):
-    product_name: str = Field(...)
-    order_quantity: Decimal = Field(...)
-    material_name: str = Field(...)
-    ratio: Decimal = Field(...)
-    material_quantity: Decimal = Field(...)
+    factory_code: str | None = None
+    factory_name: str | None = None
+    product_name: str | None = None
+    order_quantity: float | None = None
+    material_name: str | None = None
+    ratio: float | None = None
+    material_quantity: float
