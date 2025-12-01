@@ -168,12 +168,12 @@ async def process_sales_file(file_path: str, conn: asyncpg.Connection) -> Dict[s
         # Filter by sales code prefix
         df_warehouse['first_4_sales_code'] = df_warehouse['sales_code'].str.split("-").str[0]
         before_filter_count = len(df_warehouse)
-        df_warehouse = df_warehouse[df_warehouse['first_4_sales_code'] == '2301']
+        df_warehouse = df_warehouse[df_warehouse['first_4_sales_code'].isin(['2301', '2302'])]
         after_filter_count = len(df_warehouse)
 
         if before_filter_count > after_filter_count:
             filtered_out = before_filter_count - after_filter_count
-            logger.info(f"Filtered out {filtered_out} rows due to sales_code prefix != '2301'")
+            logger.info(f"Filtered out {filtered_out} rows due to sales_code prefix not in ['2301', '2302']")
 
         df_warehouse.drop(columns=['first_4_sales_code'], inplace=True)
 
