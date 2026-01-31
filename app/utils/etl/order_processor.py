@@ -314,7 +314,7 @@ async def update_factory_list(conn: asyncpg.Connection) -> int:
                 factory_name,
                 TRUE as is_active,
                 FALSE as has_onsite,
-                salesman
+                COALESCE(salesman, 'Unassigned') AS salesman
             FROM copr13
             WHERE factory_code IS NOT NULL
             ORDER BY factory_code, order_date DESC NULLS LAST

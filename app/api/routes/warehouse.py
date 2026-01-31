@@ -668,7 +668,6 @@ async def get_sales_pivot(
                 SUM(fs.sales_quantity) as sales_quantity
             FROM fact_sales fs
             JOIN dim_factory df ON fs.factory_code = df.factory_code
-            JOIN dim_product dp ON fs.product_name = dp.product_name
             JOIN dim_date dd ON fs.sales_date = dd.date
             WHERE dd.year = ANY($1)
             {factory_filter}
