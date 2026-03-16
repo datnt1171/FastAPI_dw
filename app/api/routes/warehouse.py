@@ -1301,3 +1301,93 @@ async def get_order_bom(
             status_code=500,
             detail=f"Failed to retrieve order_bom_result: {str(e)}"
         )
+    
+
+class DayMonthYearParams:
+    def __init__(
+        self,
+        day__gte: int = Query(...),
+        day__lte: int = Query(...),
+        month: str = Query(...),   # "10,11,12"
+        year: str = Query(...),    # "2025,2026"
+    ):
+        self.day__gte = day__gte
+        self.day__lte = day__lte
+        self.months = [int(m.strip()) for m in month.split(',')]
+        self.years = [int(y.strip()) for y in year.split(',')]
+
+
+@router.get("/pivot-product-order")
+async def get_pivot_product_order(
+    params: DayMonthYearParams = Depends(),
+    factory: Optional[str] = None,
+    increase: bool = Query(default=True),
+    permitted=Depends(has_permission())
+):
+    factory_codes = [c.strip() for c in factory.split(',')] if factory else []
+
+    # Build dynamic placeholders
+    base_idx = 3  # $1=day_gte, $2=day_lte, $3... onward
+    query_params = [params.day__gte, params.day__lte]
+
+    year_placeholders = ', '.join([f'${base_idx + i}' for i in range(len(params.years))])
+    query_params.extend(params.years)
+
+    month_placeholders = ', '.join([f'${base_idx + len(params.years) + i}' for i in range(len(params.months))])
+    query_params.extend(params.months)
+
+    factory_filter = ""
+    if factory_codes:
+        start = base_idx + len(params.years) + len(params.months)
+        factory_placeholders = ', '.join([f'${start + i}' for i in range(len(factory_codes))])
+        factory_filter = f"AND fo.factory_code IN ({factory_placeholders})"
+        query_params.extend(factory_codes)
+
+    try:
+        query = f"""
+            SELECT dd.year, dd.month, 
+                   fo.factory_code, df.factory_name,
+                   fo.product_code, fo.product_name,
+                   SUM(fo.order_quantity) AS order_quantity
+            FROM fact_order fo
+                JOIN dim_factory df ON fo.factory_code = df.factory_code
+                JOIN dim_date dd ON fo.order_date = dd.date
+            WHERE dd.day BETWEEN $1 AND $2
+              AND dd.year IN ({year_placeholders})
+              AND dd.month IN ({month_placeholders})
+              {factory_filter}
+            GROUP BY dd.year, dd.month, fo.factory_code, df.factory_name, fo.product_code, fo.product_name
+        """
+
+        result = await execute_query(query=query, params=tuple(query_params), fetch_all=True)
+
+        if not result:
+            return []
+
+        df = pd.DataFrame(result, columns=["year", "month", "factory_code", "factory_name", "product_code", "product_name", "order_quantity"])
+        df["year_month"] = df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2)
+
+        pivot = df.pivot_table(
+            index=["product_code", "product_name", "factory_code", "factory_name"],
+            columns="year_month",
+            values="order_quantity",
+            aggfunc="sum",
+            fill_value=0
+        ).reset_index()
+
+        pivot.columns.name = None
+
+        # Sort by first year-month column
+        ym_cols = [c for c in pivot.columns if c not in ("product_code", "product_name", "factory_code", "factory_name")]
+
+        pivot["total_order"] = pivot[ym_cols].sum(axis=1)
+        pivot["avg_order"] = pivot[ym_cols].mean(axis=1).round(2)
+
+        if ym_cols:
+            pivot = pivot.sort_values(by=["factory_code", "total_order"], ascending=increase)
+
+        return pivot.to_dict(orient="records")
+
+    except Exception as e:
+        logger.error(f"Error retrieving pivot-product-order: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve pivot-product-order: {str(e)}")

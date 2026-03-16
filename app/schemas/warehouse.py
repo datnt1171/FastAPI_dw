@@ -194,3 +194,12 @@ class OrderBOM(BaseRecord):
     material_name: str | None = None
     ratio: float | None = None
     material_quantity: float
+
+
+class PivotProductOrder(BaseRecord):
+    product_code: str
+    product_name: str
+    factory_code: str
+    factory_name: str
+    
+    model_config = {"extra": "allow"}
