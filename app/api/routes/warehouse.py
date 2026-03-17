@@ -1347,7 +1347,7 @@ async def get_pivot_product_sales(
     if factory_codes:
         start = next_idx + 1
         factory_placeholders = ', '.join([f'${start + i}' for i in range(len(factory_codes))])
-        factory_filter = f"AND fo.factory_code IN ({factory_placeholders})"
+        factory_filter = f"AND fs.factory_code IN ({factory_placeholders})"
         query_params.extend(factory_codes)
 
     try:
