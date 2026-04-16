@@ -119,6 +119,8 @@ class PivotThinnerPaintRatio(BaseRecord):
     thinner_data: List[Dict[str, Any]]
     paint_data: List[Dict[str, Any]]
     ratio_data: List[Dict[str, Any]]
+    thinner_detail_data: List[Dict[str, Any]]
+    paint_detail_data: List[Dict[str, Any]]
 
 
 class FactOrder(BaseRecord):

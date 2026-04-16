@@ -15,6 +15,7 @@ from app.schemas.warehouse import (Overall,
 from app.schemas.common import DateRangeParams, DateRangeTargetParams, TIME_GROUP_BY_MAPPING
 from datetime import datetime, date
 import pandas as pd
+import asyncio
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/warehouse", tags=["warehouse"])
@@ -878,122 +879,148 @@ async def get_sales_pivot(
     )
 ) -> PivotThinnerPaintRatio:
     try:
-        # Split comma-separated strings into lists
         thinner_list = [t.strip() for t in thinner.split(',')]
         paint_list = [p.strip() for p in paint.split(',')]
-        
+
         thinner_placeholders = ", ".join([f"${i+2}" for i in range(len(thinner_list))])
         paint_placeholders = ", ".join([f"${i+2+len(thinner_list)}" for i in range(len(paint_list))])
-        
-        query = f"""WITH thinner_paint_sales AS (
-                    SELECT
-                        df.factory_code,
-                        df.factory_name,
-                        dd.month,
-                        SUM(CASE WHEN dp.product_type IN ({thinner_placeholders}) 
-                            THEN fs.sales_quantity ELSE 0 END) as sales_thinner_quantity,
-                        SUM(CASE WHEN dp.product_type IN ({paint_placeholders}) 
-                            THEN fs.sales_quantity ELSE 0 END) as sales_paint_quantity
-                    FROM fact_sales fs
-                    JOIN dim_date dd ON fs.sales_date = dd.date
-                    JOIN dim_factory df ON fs.factory_code = df.factory_code
-                    JOIN dim_product dp ON fs.product_name = dp.product_name
-                    WHERE dd.year = $1
-                    GROUP BY df.factory_code, df.factory_name, dd.month
+        all_placeholders = ", ".join([f"${i+2}" for i in range(len(thinner_list) + len(paint_list))])
+
+        query_summary = f"""
+            WITH thinner_paint_sales AS (
+                SELECT
+                    df.factory_code,
+                    df.factory_name,
+                    dd.month,
+                    SUM(CASE WHEN dp.product_type IN ({thinner_placeholders}) 
+                        THEN fs.sales_quantity ELSE 0 END) as sales_thinner_quantity,
+                    SUM(CASE WHEN dp.product_type IN ({paint_placeholders}) 
+                        THEN fs.sales_quantity ELSE 0 END) as sales_paint_quantity
+                FROM fact_sales fs
+                JOIN dim_date dd ON fs.sales_date = dd.date
+                JOIN dim_factory df ON fs.factory_code = df.factory_code
+                JOIN dim_product dp ON fs.product_name = dp.product_name
+                WHERE dd.year = $1
+                GROUP BY df.factory_code, df.factory_name, dd.month
+            )
+            SELECT 
+                factory_code,
+                factory_name,
+                month,
+                sales_thinner_quantity,
+                sales_paint_quantity,
+                CASE 
+                    WHEN sales_thinner_quantity = 0 AND sales_paint_quantity = 0 THEN '0'
+                    WHEN sales_thinner_quantity = 0 THEN CONCAT('0:', sales_paint_quantity)
+                    WHEN sales_paint_quantity = 0 THEN CONCAT(sales_thinner_quantity, ':0')
+                    ELSE CONCAT(
+                        ROUND((sales_thinner_quantity / NULLIF(sales_paint_quantity, 0))::NUMERIC, 1)::TEXT, 
+                        ':1'
                     )
-                    SELECT 
-                        factory_code,
-                        factory_name,
-                        month,
-                        sales_thinner_quantity,
-                        sales_paint_quantity,
-                        CASE 
-                            WHEN sales_thinner_quantity = 0 AND sales_paint_quantity = 0 THEN '0'
-                            WHEN sales_thinner_quantity = 0 THEN CONCAT('0:', sales_paint_quantity)
-                            WHEN sales_paint_quantity = 0 THEN CONCAT(sales_thinner_quantity, ':0')
-                            ELSE CONCAT(
-                                ROUND((sales_thinner_quantity / NULLIF(sales_paint_quantity, 0))::NUMERIC, 1)::TEXT, 
-                                ':1'
-                            )
-                        END AS ratio
-                    FROM thinner_paint_sales
-                    WHERE sales_thinner_quantity != 0
-                    OR sales_paint_quantity != 0
-                    ORDER BY factory_code, month
-                """
-        
-        params = [year] + thinner_list + paint_list
-        
-        result = await execute_query(
-            query=query,
-            params=tuple(params),
-            fetch_all=True
+                END AS ratio
+            FROM thinner_paint_sales
+            WHERE sales_thinner_quantity != 0 OR sales_paint_quantity != 0
+            ORDER BY factory_code, month
+        """
+
+        query_detail = f"""
+            SELECT
+                df.factory_code,
+                df.factory_name,
+                dp.product_type,
+                dp.product_name,
+                dd.month,
+                SUM(fs.sales_quantity) as sales_quantity
+            FROM fact_sales fs
+            JOIN dim_date dd ON fs.sales_date = dd.date
+            JOIN dim_factory df ON fs.factory_code = df.factory_code
+            JOIN dim_product dp ON fs.product_name = dp.product_name
+            WHERE dd.year = $1
+            AND dp.product_type IN ({all_placeholders})
+            GROUP BY df.factory_code, df.factory_name, dp.product_type, dp.product_name, dd.month
+            ORDER BY factory_code, month
+        """
+
+        result_summary, result_detail = await asyncio.gather(
+            execute_query(query=query_summary, params=tuple([year] + thinner_list + paint_list), fetch_all=True),
+            execute_query(query=query_detail,  params=tuple([year] + thinner_list + paint_list), fetch_all=True),
         )
 
-        # Convert to DataFrame
-        df = pd.DataFrame(result)
-        
-        if df.empty:
+        df_summary = pd.DataFrame(result_summary)
+        df_detail  = pd.DataFrame(result_detail)
+
+        if df_summary.empty:
             return PivotThinnerPaintRatio(
                 thinner_data=[],
                 paint_data=[],
-                ratio_data=[]
+                ratio_data=[],
+                thinner_detail_data=[],
+                paint_detail_data=[]
             )
-        
-        # Create pivot tables
-        thinner_pivot = df.pivot_table(
+
+        # --- Summary pivots (factory + month) ---
+        thinner_pivot = df_summary.pivot_table(
             index=['factory_code', 'factory_name'],
             columns='month',
             values='sales_thinner_quantity',
             fill_value=0
         ).reset_index()
-        
-        paint_pivot = df.pivot_table(
+
+        paint_pivot = df_summary.pivot_table(
             index=['factory_code', 'factory_name'],
             columns='month',
             values='sales_paint_quantity',
             fill_value=0
         ).reset_index()
-        
-        ratio_pivot = df.pivot(
+
+        ratio_pivot = df_summary.pivot(
             index=['factory_code', 'factory_name'],
             columns='month',
             values='ratio'
         ).fillna('0').reset_index()
-        
-        # Get the latest month column (highest month number)
+
+        # Sort by latest month total descending
         month_columns = [col for col in thinner_pivot.columns if col not in ['factory_code', 'factory_name']]
         if month_columns:
             latest_month = max(month_columns, key=int)
-            
-            # Calculate total sales for latest month for sorting
-            sort_column = 'total_latest_month'
-            thinner_pivot[sort_column] = thinner_pivot[latest_month] + paint_pivot[latest_month]
-            
-            # Sort all pivots by the total of latest month (descending)
-            thinner_pivot = thinner_pivot.sort_values(sort_column, ascending=False).drop(columns=[sort_column])
-            
-            # Apply same sorting to paint and ratio pivots
-            paint_pivot = paint_pivot.loc[thinner_pivot.index]
-            ratio_pivot = ratio_pivot.loc[thinner_pivot.index]
-            
-            # Reset index after sorting
+            sort_col = 'total_latest_month'
+            thinner_pivot[sort_col] = thinner_pivot[latest_month] + paint_pivot[latest_month]
+            thinner_pivot = thinner_pivot.sort_values(sort_col, ascending=False).drop(columns=[sort_col])
+            paint_pivot   = paint_pivot.loc[thinner_pivot.index]
+            ratio_pivot   = ratio_pivot.loc[thinner_pivot.index]
             thinner_pivot = thinner_pivot.reset_index(drop=True)
-            paint_pivot = paint_pivot.reset_index(drop=True)
-            ratio_pivot = ratio_pivot.reset_index(drop=True)
-        
-        for pivot_df in [thinner_pivot, paint_pivot, ratio_pivot]:
-            pivot_df.columns = [str(col) for col in pivot_df.columns] #JSON key must be string
-        
-        # Convert to dict for JSON response
-        thinner_data = thinner_pivot.to_dict('records')
-        paint_data = paint_pivot.to_dict('records')
-        ratio_data = ratio_pivot.to_dict('records')
+            paint_pivot   = paint_pivot.reset_index(drop=True)
+            ratio_pivot   = ratio_pivot.reset_index(drop=True)
+
+        # --- Detail pivots (factory + product_type + product_name + month) ---
+        thinner_detail_pivot = pd.DataFrame()
+        paint_detail_pivot   = pd.DataFrame()
+
+        if not df_detail.empty:
+            thinner_detail_pivot = df_detail[df_detail['product_type'].isin(thinner_list)].pivot_table(
+                index=['factory_code', 'factory_name', 'product_type', 'product_name'],
+                columns='month',
+                values='sales_quantity',
+                fill_value=0
+            ).reset_index()
+
+            paint_detail_pivot = df_detail[df_detail['product_type'].isin(paint_list)].pivot_table(
+                index=['factory_code', 'factory_name', 'product_type', 'product_name'],
+                columns='month',
+                values='sales_quantity',
+                fill_value=0
+            ).reset_index()
+
+        # Stringify columns for all pivots
+        for pivot_df in [thinner_pivot, paint_pivot, ratio_pivot, thinner_detail_pivot, paint_detail_pivot]:
+            pivot_df.columns = [str(col) for col in pivot_df.columns]
 
         return PivotThinnerPaintRatio(
-            thinner_data=thinner_data,
-            paint_data=paint_data,
-            ratio_data=ratio_data
+            thinner_data=thinner_pivot.to_dict('records'),
+            paint_data=paint_pivot.to_dict('records'),
+            ratio_data=ratio_pivot.to_dict('records'),
+            thinner_detail_data=thinner_detail_pivot.to_dict('records'),
+            paint_detail_data=paint_detail_pivot.to_dict('records'),
         )
 
     except Exception as e:
