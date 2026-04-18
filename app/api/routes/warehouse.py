@@ -876,15 +876,41 @@ async def get_sales_pivot(
     paint: str = Query(
         default="烤調色PM HAP,木調色PM GO,底漆 LOT,面漆 BONG",
         description="Comma-separated paint product types"
-    )
+    ),
+    factory: str = Query(
+        default=None,
+        description="Comma-separated factory codes, omit for all"
+    ),
 ) -> PivotThinnerPaintRatio:
     try:
         thinner_list = [t.strip() for t in thinner.split(',')]
-        paint_list = [p.strip() for p in paint.split(',')]
+        paint_list   = [p.strip() for p in paint.split(',')]
+        factory_list = [f.strip() for f in factory.split(',')] if factory else []
 
         thinner_placeholders = ", ".join([f"${i+2}" for i in range(len(thinner_list))])
         paint_placeholders = ", ".join([f"${i+2+len(thinner_list)}" for i in range(len(paint_list))])
         all_placeholders = ", ".join([f"${i+2}" for i in range(len(thinner_list) + len(paint_list))])
+
+        # Base param list for summary query: [year, ...thinner, ...paint]
+        summary_params = [year] + thinner_list + paint_list
+        detail_params  = [year] + thinner_list + paint_list
+
+        factory_filter_summary = ""
+        factory_filter_detail  = ""
+
+        if factory_list:
+            # summary params: $1=year, $2..N=thinner, $N+1..M=paint, $M+1..=factory
+            start = 2 + len(thinner_list) + len(paint_list)
+            placeholders = ", ".join([f"${start + i}" for i in range(len(factory_list))])
+            factory_filter_summary = f"AND df.factory_code IN ({placeholders})"
+
+            # detail params: $1=year, $2..N=all products, $N+1..=factory
+            start = 2 + len(thinner_list) + len(paint_list)
+            placeholders = ", ".join([f"${start + i}" for i in range(len(factory_list))])
+            factory_filter_detail = f"AND df.factory_code IN ({placeholders})"
+
+            summary_params += factory_list
+            detail_params  += factory_list
 
         query_summary = f"""
             WITH thinner_paint_sales AS (
@@ -901,6 +927,7 @@ async def get_sales_pivot(
                 JOIN dim_factory df ON fs.factory_code = df.factory_code
                 JOIN dim_product dp ON fs.product_name = dp.product_name
                 WHERE dd.year = $1
+                {factory_filter_summary}
                 GROUP BY df.factory_code, df.factory_name, dd.month
             )
             SELECT 
@@ -937,13 +964,14 @@ async def get_sales_pivot(
             JOIN dim_product dp ON fs.product_name = dp.product_name
             WHERE dd.year = $1
             AND dp.product_type IN ({all_placeholders})
+            {factory_filter_detail}
             GROUP BY df.factory_code, df.factory_name, dp.product_type, dp.product_name, dd.month
             ORDER BY factory_code, month
         """
 
         result_summary, result_detail = await asyncio.gather(
-            execute_query(query=query_summary, params=tuple([year] + thinner_list + paint_list), fetch_all=True),
-            execute_query(query=query_detail,  params=tuple([year] + thinner_list + paint_list), fetch_all=True),
+            execute_query(query=query_summary, params=tuple(summary_params), fetch_all=True),
+            execute_query(query=query_detail,  params=tuple(detail_params),  fetch_all=True),
         )
 
         df_summary = pd.DataFrame(result_summary)
