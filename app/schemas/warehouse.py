@@ -3,7 +3,14 @@ from .common import BaseRecord
 from pydantic import Field
 from typing import Optional, Literal, List, Dict, Any
 from datetime import date, datetime
-from decimal import Decimal
+
+
+class FactoryBreakdown(BaseRecord):
+    factory_code: str
+    factory_name: str
+    sales_quantity: Optional[float] = 0.0
+    order_quantity: Optional[float] = 0.0
+
 
 class Overall(BaseRecord):
     month: int = Field(...)
@@ -17,6 +24,7 @@ class Overall(BaseRecord):
     order_target_value: Optional[float] = Field(default=0.0)
     sales_target_pct: Optional[float] = Field(default=0.0)
     order_target_pct: Optional[float] = Field(default=0.0)
+    factory_breakdown: List[FactoryBreakdown] = Field(default_factory=list)
 
 
 class FactorySalesRangeDiff(BaseRecord):
@@ -88,6 +96,7 @@ class SalesOrderPctDiff(BaseRecord):
     order_pct_diff: float = Field(...)
     remain_order_quantity: float = Field(...)
     remain_order_pct_diff: float = Field(...)
+
 
 class ThinnerPaintRatio(BaseRecord):
     factory_code: str = Field(...)

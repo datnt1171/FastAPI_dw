@@ -3,7 +3,7 @@ import logging
 from typing import List, Optional
 from app.core.auth import has_permission
 from app.core.database import execute_query
-from app.schemas.warehouse import (Overall,
+from app.schemas.warehouse import (Overall, FactoryBreakdown,
                                    FactorySalesRangeDiff, FactoryOrderRangeDiff,
                                    ProductSalesRangeDiff, ProductOrderRangeDiff,
                                    ScheduledAndActualSales,
@@ -56,15 +56,28 @@ async def get_overall(
     year: int = Query(datetime.now().year, ge=2020, le=datetime.now().year, description="Year"),
     target_month: int = Query(5, ge=1, le=12, description="Target month"),
     target_year: int = Query(2022, ge=2020, le=datetime.now().year, description="Target year"),
-    exclude_factory: str = Query('30673', description="Factory code to exclude"),
+    exclude_factory: List[str] = Query(default=['30673'], description="Factory codes to exclude"),
     permitted = Depends(has_permission())
 ) -> List[Overall]:
     """
     Get overall warehouse data with sales and order statistics.
-    Returns aggregated data by month with target comparisons.
+    Returns aggregated data by month with target comparisons, plus a
+    per-factory breakdown of the excluded factories for each month.
     """
     try:
-        query = """WITH filtered_dates AS (
+        # Accept both repeated params (?exclude_factory=A&exclude_factory=B)
+        # and a single comma-joined value (?exclude_factory=A,B), since the
+        # frontend currently sends the latter.
+        exclude_factory = [
+            code.strip()
+            for raw in exclude_factory
+            for code in raw.split(',')
+            if code.strip()
+        ]
+        if not exclude_factory:
+            exclude_factory = ['30673']
+
+        overall_query = """WITH filtered_dates AS (
                     SELECT date, month
                     FROM dim_date
                     WHERE day BETWEEN $1 AND $2
@@ -80,7 +93,7 @@ async def get_overall(
                 exclude_factory_sales AS (
                     SELECT fd.month, COALESCE(sum(fs.sales_quantity), 0) AS exclude_factory_sales_quantity
                     FROM filtered_dates fd
-                    LEFT JOIN fact_sales fs ON fs.sales_date = fd."date" AND fs.factory_code = $8
+                    LEFT JOIN fact_sales fs ON fs.sales_date = fd."date" AND fs.factory_code = ANY($8)
                     GROUP BY fd."month"
                 ),
                 total_order AS (
@@ -92,7 +105,7 @@ async def get_overall(
                 exclude_factory_order AS (
                     SELECT fd."month", COALESCE(sum(fo.order_quantity), 0) AS exclude_factory_order_quantity
                     FROM filtered_dates fd
-                    LEFT JOIN fact_order fo ON fo.order_date = fd."date" AND fo.factory_code = $8
+                    LEFT JOIN fact_order fo ON fo.order_date = fd."date" AND fo.factory_code = ANY($8)
                     GROUP BY fd."month"
                 ),
                 sales_order_quantity AS (
@@ -127,13 +140,13 @@ async def get_overall(
                     SELECT COALESCE(SUM(sales_quantity), 0) AS sales_target_value
                     FROM fact_sales fs
                     JOIN target_date td ON fs.sales_date = td."date"
-                    WHERE factory_code != $8
+                    WHERE NOT (factory_code = ANY($8))
                 ),
                 order_target AS (
                     SELECT COALESCE(SUM(order_quantity), 0) AS order_target_value
                     FROM fact_order fo
                     JOIN target_date td ON fo.order_date = td."date"
-                    WHERE factory_code != $8
+                    WHERE NOT (factory_code = ANY($8))
                 )
                 SELECT 
                     sod.month,
@@ -157,17 +170,65 @@ async def get_overall(
                 CROSS JOIN sales_target st
                 CROSS JOIN order_target ot
                 ORDER BY sod.month"""
-        
+
+        # Breakdown query only needs day/month/year filters + the factory
+        # list — give it its own, correctly-numbered param set so asyncpg
+        # isn't asked to type-infer $6/$7 params it never sees.
+        breakdown_query = """WITH filtered_dates AS (
+                    SELECT date, month
+                    FROM dim_date
+                    WHERE day BETWEEN $1 AND $2
+                    AND month BETWEEN $3 AND $4
+                    AND year = $5
+                ),
+                factory_sales AS (
+                    SELECT fd.month, fs.factory_code, dfa.factory_name, COALESCE(SUM(fs.sales_quantity), 0) AS sales_quantity
+                    FROM filtered_dates fd
+                    JOIN fact_sales fs ON fs.sales_date = fd."date" AND fs.factory_code = ANY($6)
+                    LEFT JOIN dim_factory dfa ON dfa.factory_code = fs.factory_code
+                    GROUP BY fd.month, fs.factory_code, dfa.factory_name
+                ),
+                factory_order AS (
+                    SELECT fd.month, fo.factory_code, dfa.factory_name, COALESCE(SUM(fo.order_quantity), 0) AS order_quantity
+                    FROM filtered_dates fd
+                    JOIN fact_order fo ON fo.order_date = fd."date" AND fo.factory_code = ANY($6)
+                    LEFT JOIN dim_factory dfa ON dfa.factory_code = fo.factory_code
+                    GROUP BY fd.month, fo.factory_code, dfa.factory_name
+                )
+                SELECT
+                    COALESCE(fs.month, fo.month) AS month,
+                    COALESCE(fs.factory_code, fo.factory_code) AS factory_code,
+                    COALESCE(fs.factory_name, fo.factory_name) AS factory_name,
+                    COALESCE(fs.sales_quantity, 0) AS sales_quantity,
+                    COALESCE(fo.order_quantity, 0) AS order_quantity
+                FROM factory_sales fs
+                FULL OUTER JOIN factory_order fo
+                    ON fs.month = fo.month AND fs.factory_code = fo.factory_code
+                ORDER BY month, factory_code"""
+
+        overall_params = (
+            day__gte,
+            day__lte,
+            month__gte,
+            month__lte,
+            year,
+            target_month,
+            target_year,
+            exclude_factory,
+        )
+
+        breakdown_params = (
+            day__gte,
+            day__lte,
+            month__gte,
+            month__lte,
+            year,
+            exclude_factory,
+        )
+
         overall_result = await execute_query(
-            query=query,
-            params=(day__gte,
-                    day__lte,
-                    month__gte,
-                    month__lte,
-                    year,
-                    target_month,
-                    target_year,
-                    exclude_factory),
+            query=overall_query,
+            params=overall_params,
             fetch_all=True
         )
 
@@ -175,7 +236,30 @@ async def get_overall(
             logger.warning("No data found for the specified criteria")
             return []
 
-        return overall_result
+        breakdown_result = await execute_query(
+            query=breakdown_query,
+            params=breakdown_params,
+            fetch_all=True
+        )
+
+        breakdown_by_month: dict[int, List[FactoryBreakdown]] = {}
+        for row in breakdown_result or []:
+            breakdown_by_month.setdefault(row["month"], []).append(
+                FactoryBreakdown(
+                    factory_code=row["factory_code"],
+                    factory_name=row["factory_name"],
+                    sales_quantity=row["sales_quantity"],
+                    order_quantity=row["order_quantity"],
+                )
+            )
+
+        return [
+            Overall(
+                **dict(row),
+                factory_breakdown=breakdown_by_month.get(row["month"], [])
+            )
+            for row in overall_result
+        ]
 
     except Exception as e:
         logger.error(f"Error retrieving overall_data: {str(e)}", exc_info=True)
